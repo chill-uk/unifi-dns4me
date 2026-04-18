@@ -1,0 +1,35 @@
+services:
+  unifi-dns4me:
+    image: ghcr.io/chill-uk/unifi-dns4me:latest
+    container_name: unifi-dns4me
+    # Uncomment the following lines to use an .env file for environment variables
+    # env_file:
+      # - .env
+    environment:
+      # Required
+      DNS4ME_API_KEY: ${DNS4ME_API_KEY}
+      UNIFI_API_KEY: ${UNIFI_API_KEY}
+      STATE_PATH: /data/state.json
+      TZ: Europe/Amsterdam
+
+      # Optional
+      # UNIFI_HOST: https://192.168.1.1
+      # DNS4ME_DNSMASQ_URL: https://dns4me.net/api/v2/get_hosts/dnsmasq/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+      # UNIFI_SITE_ID: default
+      # UNIFI_SKIP_TLS_VERIFY: "true"
+      # SYNC_AT: "03:15"
+      # DELETE_STALE: "false"
+      # CHECK_AFTER_SYNC: "true"
+      # DNS4ME_FALLBACK_ON_CHECK_FAIL: "false"
+      # DNS4ME_FALLBACK_SERVER_INDEX: "2"
+
+      # Debugging
+      # DNS4ME_MAX_SERVERS_PER_DOMAIN: "1"
+      # DNS4ME_INCLUDE_CHECK_DOMAIN: "false"
+
+    volumes:
+      - unifi-dns4me-data:/data
+    restart: unless-stopped
+
+volumes:
+  unifi-dns4me-data:

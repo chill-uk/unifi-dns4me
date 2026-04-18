@@ -1,0 +1,74 @@
+name: Docker Image
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PACKAGE_NAME: ${{ github.event.repository.name }}
+  IMAGE_DESCRIPTION: Sync DNS4ME forwarders into UniFi Network DNS policies without changing upstream DNS.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5.9.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=unifi-dns4me
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: |
+            ${{ steps.meta.outputs.annotations }}
+            manifest:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+            index:org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
