@@ -105,10 +105,22 @@ Check whether DNS4ME sees this host/container as correctly routed:
 unifi-dns4me check
 ```
 
-Optionally remove stale policies previously created by this tool:
+Run sync without removing stale entries:
 
 ```bash
-unifi-dns4me sync --delete-stale
+unifi-dns4me sync --no-delete-stale
+```
+
+Rebuild the state file if it was accidentally deleted:
+
+```bash
+unifi-dns4me populate-state
+```
+
+If UniFi is currently using DNS4ME's fallback/secondary resolver, populate state from server index `2`:
+
+```bash
+unifi-dns4me populate-state --server-index 2
 ```
 
 ## Docker
@@ -155,6 +167,18 @@ Run DNS4ME's check from inside the container:
 docker compose run --rm unifi-dns4me check
 ```
 
+Rebuild the state file if the Docker volume or `state.json` was accidentally deleted:
+
+```bash
+docker compose run --rm unifi-dns4me populate-state
+```
+
+If UniFi is currently using DNS4ME's fallback/secondary resolver:
+
+```bash
+docker compose run --rm unifi-dns4me populate-state --server-index 2
+```
+
 ## Configuration
 
 | Variable | Required | Description |
@@ -169,7 +193,7 @@ docker compose run --rm unifi-dns4me check
 | `DNS4ME_INCLUDE_CHECK_DOMAIN` | no | Add `dns4me.net` as a managed Forward Domain so DNS4ME's own status check resolves through DNS4ME. Defaults to `true`. |
 | `SYNC_AT` | no | Daily scheduler time for `daemon`, in `HH:MM` container local time. Defaults to `03:15`. |
 | `STATE_PATH` | no | Persistent state file used to track entries managed by this tool. Defaults to `.unifi-dns4me-state.json`; use `/data/state.json` for Docker with a `/data` volume. |
-| `DELETE_STALE` | no | In `daemon` mode, delete stale entries that the state file identifies as previously managed. Defaults to `false`. |
+| `DELETE_STALE` | no | Delete stale entries that the state file identifies as previously managed. Defaults to `true`. |
 | `CHECK_AFTER_SYNC` | no | Run `http://check.dns4me.net` after sync. Defaults to `true`. |
 | `DNS4ME_FALLBACK_ON_CHECK_FAIL` | no | If `CHECK_AFTER_SYNC=true` and the check fails, switch managed forwarders to the fallback DNS4ME server. Defaults to `false`. |
 | `DNS4ME_FALLBACK_SERVER_INDEX` | no | DNS4ME resolver index to use for fallback. `2` means the secondary resolver. Defaults to `2`. |
@@ -181,8 +205,9 @@ docker compose run --rm unifi-dns4me check
 - `sync` reads the current UniFi DNS policies first. It only creates missing DNS4ME forwarders, updates previously-managed DNS4ME forwarders whose target changed, and leaves exact matches untouched.
 - The tool includes `dns4me.net` by default because DNS4ME's check endpoint depends on that domain resolving through DNS4ME.
 - DNS4ME often supplies two resolver IPs per domain. UniFi's Forward Domain UI has one DNS Server field, so the tool defaults to one target per domain. Set `DNS4ME_MAX_SERVERS_PER_DOMAIN=2` only if your UniFi version supports duplicate Forward Domain policies for the same domain.
-- The state file records the DNS4ME rules this tool manages after a successful non-dry-run sync. On later runs, `--delete-stale` can safely remove UniFi forwarders that were previously managed but disappeared from DNS4ME.
+- The state file records the DNS4ME rules this tool manages after a successful non-dry-run sync. On later runs, stale deletion can safely remove UniFi forwarders that were previously managed but disappeared from DNS4ME.
 - The first successful non-dry-run sync seeds the state file from the current DNS4ME rule set. A dry-run does not write state.
+- If the state file is accidentally deleted, `populate-state` rebuilds it from DNS4ME rules that already exist as UniFi Forward Domain policies. It does not create, update, or delete UniFi policies.
 - The DNS4ME check is only meaningful from a host or container whose DNS lookups use the UniFi gateway/DNS path you are configuring.
 - Fallback mode is opt-in. With `CHECK_AFTER_SYNC=true` and `DNS4ME_FALLBACK_ON_CHECK_FAIL=true`, the tool first syncs to the primary DNS4ME resolver, runs DNS4ME's check, and switches managed forwarders to `DNS4ME_FALLBACK_SERVER_INDEX` if the check fails.
 - UniFi's local API documentation is available in UniFi Network under `Integrations`.

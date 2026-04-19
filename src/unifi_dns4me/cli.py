@@ -66,12 +66,25 @@ def main(argv: list[str] | None = None) -> int:
     preview = subparsers.add_parser("preview", help="Fetch and parse DNS4ME rules without calling UniFi.")
     preview.add_argument("--limit", type=int, default=20, help="Maximum domains to print.")
 
+    populate_state = subparsers.add_parser(
+        "populate-state",
+        help="Rebuild the managed state file from DNS4ME rules that already exist in UniFi.",
+    )
+    populate_state.add_argument("--dry-run", action="store_true", help="Show what would be saved without writing state.")
+    populate_state.add_argument(
+        "--server-index",
+        type=int,
+        default=1,
+        help="DNS4ME resolver index to populate state from. Use 2 if UniFi is currently on the fallback resolver.",
+    )
+
     sync = subparsers.add_parser("sync", help="Apply only necessary UniFi Forward Domain policy changes.")
     sync.add_argument("--dry-run", action="store_true", help="Show what would change without writing to UniFi.")
     sync.add_argument(
         "--delete-stale",
-        action="store_true",
-        help="Delete stale policies that this tool can identify as managed.",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("DELETE_STALE", default=True),
+        help="Delete stale policies that this tool can identify as managed. Use --no-delete-stale to keep them.",
     )
     sync.add_argument(
         "--check-after-sync",
@@ -83,9 +96,9 @@ def main(argv: list[str] | None = None) -> int:
     daemon.add_argument("--dry-run", action="store_true", help="Show what would change without writing to UniFi.")
     daemon.add_argument(
         "--delete-stale",
-        action="store_true",
-        default=_env_bool("DELETE_STALE", default=False),
-        help="Delete stale policies that this tool can identify as managed.",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("DELETE_STALE", default=True),
+        help="Delete stale policies that this tool can identify as managed. Use --no-delete-stale to keep them.",
     )
     daemon.add_argument(
         "--at",
@@ -134,6 +147,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "preview":
             return _preview(rules, args.limit)
+
+        if args.command == "populate-state":
+            return _populate_state(config, rules, dry_run=args.dry_run, server_index=args.server_index)
 
         if args.command == "sync":
             return _sync(
@@ -282,6 +298,44 @@ def _existing(config: Config, *, raw: bool, limit: int) -> int:
     return 0
 
 
+def _populate_state(config: Config, rules: list[ForwardRule], *, dry_run: bool, server_index: int) -> int:
+    client = _client_for_config(config)
+    policies = client.list_dns_policies()
+    managed_rules = _recover_managed_rules(
+        existing=policies,
+        rules=rules,
+        max_servers_per_domain=config.max_servers_per_domain,
+        include_check_domain=config.include_check_domain,
+        server_index=server_index,
+    )
+
+    wanted_count = len(
+        _select_wanted_rules(
+            rules,
+            max_servers_per_domain=config.max_servers_per_domain,
+            include_check_domain=config.include_check_domain,
+            server_index=server_index,
+        )
+    )
+    print(f"DNS4ME wanted rules for server index {server_index}: {wanted_count}")
+    print(f"Matching UniFi Forward Domain policies found: {len(managed_rules)}")
+
+    if not managed_rules:
+        print("No matching UniFi Forward Domain policies found. State file was not written.", file=sys.stderr)
+        return 2
+
+    if dry_run:
+        print(f"would save state: {config.state_path}")
+        for rule in sorted(managed_rules):
+            print(f"would track: {rule.domain} -> {rule.server}")
+        print("Dry run complete. No state file was written.")
+        return 0
+
+    save_managed_rules(config.state_path, managed_rules)
+    print(f"State saved: {config.state_path}")
+    return 0
+
+
 def _sync(
     config: Config,
     rules: list[ForwardRule],
@@ -337,7 +391,7 @@ def _sync(
                 client.delete_dns_policy(policy.id)
                 print(f"deleted stale: {policy.name} -> {policy.value}")
     elif plan.stale:
-        print(f"{len(plan.stale)} stale managed policies found; rerun with --delete-stale to remove them.")
+        print(f"{len(plan.stale)} stale managed policies found but left in place because stale deletion is disabled.")
 
     if dry_run:
         print("Dry run complete. No UniFi changes were made.")
@@ -472,6 +526,30 @@ def _plan_sync(
         creates=creates,
         stale=stale,
     )
+
+
+def _recover_managed_rules(
+    existing: list[DnsPolicy],
+    rules: list[ForwardRule],
+    *,
+    max_servers_per_domain: int,
+    include_check_domain: bool,
+    server_index: int,
+) -> set[ForwardRule]:
+    wanted_rules = set(
+        _select_wanted_rules(
+            rules,
+            max_servers_per_domain=max_servers_per_domain,
+            include_check_domain=include_check_domain,
+            server_index=server_index,
+        )
+    )
+    existing_rules = {
+        ForwardRule(domain=policy.name, server=policy.value)
+        for policy in existing
+        if policy.type == "FORWARD_DOMAIN"
+    }
+    return wanted_rules & existing_rules
 
 
 def _select_wanted_rules(

@@ -18,7 +18,7 @@ services:
       # UNIFI_SITE_ID: default
       # UNIFI_SKIP_TLS_VERIFY: "true"
       # SYNC_AT: "03:15"
-      # DELETE_STALE: "false"
+      # DELETE_STALE: "true"
       # CHECK_AFTER_SYNC: "true"
       # DNS4ME_FALLBACK_ON_CHECK_FAIL: "false"
       # DNS4ME_FALLBACK_SERVER_INDEX: "2"

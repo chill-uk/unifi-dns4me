@@ -1,6 +1,6 @@
 import unittest
 
-from unifi_dns4me.cli import _plan_sync
+from unifi_dns4me.cli import _plan_sync, _recover_managed_rules
 from unifi_dns4me.dns4me import ForwardRule
 from unifi_dns4me.unifi import DnsPolicy
 
@@ -191,6 +191,34 @@ class SyncPlanTest(unittest.TestCase):
                 ForwardRule("example.com", "1.1.1.1"),
             ],
         )
+
+    def test_recover_managed_rules_from_existing_unifi_policies(self) -> None:
+        recovered = _recover_managed_rules(
+            existing=[
+                policy("1", "example.com", "1.1.1.1", description=None),
+                policy("2", "manual.example", "1.1.1.1", description=None),
+            ],
+            rules=[ForwardRule("example.com", "1.1.1.1")],
+            max_servers_per_domain=1,
+            include_check_domain=False,
+            server_index=1,
+        )
+
+        self.assertEqual(recovered, {ForwardRule("example.com", "1.1.1.1")})
+
+    def test_recover_managed_rules_can_use_secondary_server_index(self) -> None:
+        recovered = _recover_managed_rules(
+            existing=[policy("1", "example.com", "2.2.2.2", description=None)],
+            rules=[
+                ForwardRule("example.com", "1.1.1.1"),
+                ForwardRule("example.com", "2.2.2.2"),
+            ],
+            max_servers_per_domain=1,
+            include_check_domain=False,
+            server_index=2,
+        )
+
+        self.assertEqual(recovered, {ForwardRule("example.com", "2.2.2.2")})
 
 
 if __name__ == "__main__":
