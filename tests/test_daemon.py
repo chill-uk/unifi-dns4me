@@ -1,17 +1,19 @@
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime
+from io import StringIO
 
 from unifi_dns4me.cli import (
     CheckOutcome,
     _alternate_server_index,
     _first_success,
-    _build_dns_a_query,
     _dns4me_server_for_index,
     _next_daily_run,
-    _parse_dns_a_response,
     _parse_daily_time,
+    _set_check_domain_forwarder,
 )
 from unifi_dns4me.dns4me import ForwardRule
+from unifi_dns4me.unifi import DnsPolicy
 
 
 class DaemonScheduleTest(unittest.TestCase):
@@ -78,26 +80,43 @@ class DaemonScheduleTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
             _dns4me_server_for_index([ForwardRule("example.com", "3.10.65.124")], 2)
 
-    def test_parse_dns_a_response(self) -> None:
-        query = _build_dns_a_query("check.dns4me.net", 1234)
-        question = query[12:]
-        response = (
-            (1234).to_bytes(2, "big")
-            + b"\x81\x80"
-            + (1).to_bytes(2, "big")
-            + (1).to_bytes(2, "big")
-            + (0).to_bytes(2, "big")
-            + (0).to_bytes(2, "big")
-            + question
-            + b"\xc0\x0c"
-            + (1).to_bytes(2, "big")
-            + (1).to_bytes(2, "big")
-            + (60).to_bytes(4, "big")
-            + (4).to_bytes(2, "big")
-            + bytes([3, 10, 65, 124])
+    def test_set_check_domain_forwarder_updates_existing_policy(self) -> None:
+        client = RecordingDnsPolicyClient(
+            [DnsPolicy(id="policy-1", type="FORWARD_DOMAIN", name="dns4me.net", value="1.1.1.1", raw={})]
         )
 
-        self.assertEqual(_parse_dns_a_response(response, 1234), ["3.10.65.124"])
+        with redirect_stdout(StringIO()):
+            _set_check_domain_forwarder(client, "2.2.2.2")
+
+        self.assertEqual(client.updated, [("policy-1", "2.2.2.2")])
+        self.assertEqual(client.created, [])
+
+    def test_set_check_domain_forwarder_creates_missing_policy(self) -> None:
+        client = RecordingDnsPolicyClient([])
+
+        with redirect_stdout(StringIO()):
+            _set_check_domain_forwarder(client, "2.2.2.2")
+
+        self.assertEqual(client.updated, [])
+        self.assertEqual(client.created, ["2.2.2.2"])
+
+
+class RecordingDnsPolicyClient:
+    def __init__(self, policies):
+        self.policies = policies
+        self.updated = []
+        self.created = []
+
+    def list_dns_policies(self):
+        return self.policies
+
+    def update_dns_policy(self, policy_id, body):
+        self.updated.append((policy_id, body["ipAddress"]))
+        return {}
+
+    def create_dns_policy(self, body):
+        self.created.append(body["ipAddress"])
+        return {}
 
 
 if __name__ == "__main__":

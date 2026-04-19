@@ -37,6 +37,7 @@
   <Config Name="Sync At" Target="SYNC_AT" Default="03:15" Mode="" Description="Optional daily sync time in HH:MM" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Delete Stale" Target="DELETE_STALE" Default="true" Mode="" Description="Delete stale entries during sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Check After Sync" Target="CHECK_AFTER_SYNC" Default="true" Mode="" Description="Run checks after sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Check After Sync Delay Seconds" Target="CHECK_AFTER_SYNC_DELAY_SECONDS" Default="10" Mode="" Description="Delay after UniFi writes before running the DNS4ME check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="Heartbeat Enabled" Target="HEARTBEAT_ENABLED" Default="true" Mode="" Description="Enable heartbeat/failover checks" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat Interval Seconds" Target="HEARTBEAT_INTERVAL_SECONDS" Default="300" Mode="" Description="Heartbeat interval in seconds" Type="Variable" Display="advanced" Required="false" Mask="false"/>

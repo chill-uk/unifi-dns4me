@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import socket
 import sys
 import time
@@ -40,6 +39,7 @@ class Config:
     max_servers_per_domain: int
     state_path: str
     check_after_sync: bool
+    check_after_sync_delay_seconds: int
     include_check_domain: bool
     heartbeat_internet_checks: tuple[tuple[str, int], ...]
     heartbeat_dns_check_domains: tuple[str, ...]
@@ -422,134 +422,55 @@ def _dns4me_health_check() -> CheckOutcome:
     return CheckOutcome(False, f"DNS4ME check failed: {json.dumps(result, sort_keys=True)}")
 
 
-def _dns4me_server_health_check(server: str) -> CheckOutcome:
-    resolved = _resolve_a_via_dns_server(DNS4ME_CHECK_HOST, server)
-    if not resolved.ok:
-        return CheckOutcome(False, f"container-local check through DNS4ME resolver {server} failed: {resolved.message}")
+def _unifi_check_domain_preflight(
+    config: Config,
+    *,
+    target_server: str,
+    active_server: str,
+    dry_run: bool,
+) -> bool:
+    if dry_run:
+        print(f"would preflight: dns4me.net -> {target_server}")
+        return True
 
-    failures: list[str] = []
-    for ip_address in resolved.message.split(", "):
-        result = _dns4me_check_at_ip(ip_address)
-        if result.ok:
-            return CheckOutcome(
-                True,
-                f"container-local check through DNS4ME resolver {server} passed "
-                f"({DNS4ME_CHECK_HOST} -> {ip_address})",
-            )
-        failures.append(result.message)
-    return CheckOutcome(
-        False,
-        f"container-local check through DNS4ME resolver {server} failed after resolving "
-        f"{DNS4ME_CHECK_HOST}: {'; '.join(failures)}",
-    )
-
-
-def _resolve_a_via_dns_server(domain: str, server: str, timeout: float = 5.0) -> CheckOutcome:
-    query_id = random.randint(0, 65535)
-    query = _build_dns_a_query(domain, query_id)
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(timeout)
-            sock.sendto(query, (server, 53))
-            response, _ = sock.recvfrom(4096)
-    except OSError as exc:
-        return CheckOutcome(False, f"{server} DNS query for {domain} failed: {exc}")
+    client = _client_for_config(config)
+    _set_check_domain_forwarder(client, target_server)
+    if config.check_after_sync_delay_seconds > 0:
+        print(
+            f"Waiting {config.check_after_sync_delay_seconds}s before DNS4ME preflight check "
+            f"so UniFi DNS changes can settle.",
+            flush=True,
+        )
+        time.sleep(config.check_after_sync_delay_seconds)
 
     try:
-        addresses = _parse_dns_a_response(response, query_id)
-    except ValueError as exc:
-        return CheckOutcome(False, f"{server} DNS response for {domain} was invalid: {exc}")
-    if not addresses:
-        return CheckOutcome(False, f"{server} returned no A records for {domain}")
-    return CheckOutcome(True, ", ".join(addresses))
+        check_result = _check()
+    except RuntimeError as exc:
+        print(f"Heartbeat preflight DNS4ME check failed: {exc}", file=sys.stderr, flush=True)
+        check_result = 1
+
+    if check_result == 0:
+        print("Heartbeat preflight result: UniFi check-domain forwarding passed.", flush=True)
+        return True
+
+    print("Heartbeat preflight result: UniFi check-domain forwarding failed; restoring active resolver.", flush=True)
+    _set_check_domain_forwarder(client, active_server)
+    return False
 
 
-def _build_dns_a_query(domain: str, query_id: int) -> bytes:
-    header = query_id.to_bytes(2, "big")
-    header += b"\x01\x00"
-    header += (1).to_bytes(2, "big")
-    header += (0).to_bytes(2, "big")
-    header += (0).to_bytes(2, "big")
-    header += (0).to_bytes(2, "big")
-    question = b"".join(bytes([len(label)]) + label.encode("ascii") for label in domain.rstrip(".").split("."))
-    question += b"\x00"
-    question += (1).to_bytes(2, "big")
-    question += (1).to_bytes(2, "big")
-    return header + question
-
-
-def _parse_dns_a_response(response: bytes, expected_query_id: int) -> list[str]:
-    if len(response) < 12:
-        raise ValueError("response was too short")
-    query_id = int.from_bytes(response[0:2], "big")
-    if query_id != expected_query_id:
-        raise ValueError("response id did not match query")
-    flags = int.from_bytes(response[2:4], "big")
-    if flags & 0x000F:
-        raise ValueError(f"DNS rcode {flags & 0x000F}")
-
-    question_count = int.from_bytes(response[4:6], "big")
-    answer_count = int.from_bytes(response[6:8], "big")
-    offset = 12
-    for _ in range(question_count):
-        offset = _skip_dns_name(response, offset)
-        offset += 4
-
-    addresses: list[str] = []
-    for _ in range(answer_count):
-        offset = _skip_dns_name(response, offset)
-        if offset + 10 > len(response):
-            raise ValueError("answer record was truncated")
-        record_type = int.from_bytes(response[offset : offset + 2], "big")
-        record_class = int.from_bytes(response[offset + 2 : offset + 4], "big")
-        data_length = int.from_bytes(response[offset + 8 : offset + 10], "big")
-        offset += 10
-        if offset + data_length > len(response):
-            raise ValueError("answer data was truncated")
-        data = response[offset : offset + data_length]
-        offset += data_length
-        if record_type == 1 and record_class == 1 and data_length == 4:
-            addresses.append(socket.inet_ntoa(data))
-    return addresses
-
-
-def _skip_dns_name(packet: bytes, offset: int) -> int:
-    while True:
-        if offset >= len(packet):
-            raise ValueError("name was truncated")
-        length = packet[offset]
-        if length & 0xC0 == 0xC0:
-            if offset + 1 >= len(packet):
-                raise ValueError("compressed name was truncated")
-            return offset + 2
-        if length == 0:
-            return offset + 1
-        offset += 1 + length
-
-
-def _dns4me_check_at_ip(ip_address: str, timeout: float = 10.0) -> CheckOutcome:
-    cache_buster = int(time.time() * 1000)
-    request = Request(
-        f"http://{ip_address}/?_={cache_buster}",
-        headers={
-            "Accept": "application/json, */*",
-            "Cache-Control": "no-cache",
-            "Host": DNS4ME_CHECK_HOST,
-            "Pragma": "no-cache",
-            "Referer": "http://dns4me.net/",
-            "Origin": "http://dns4me.net",
-            "User-Agent": "unifi-dns4me/0.1",
-        },
-    )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            charset = response.headers.get_content_charset() or "utf-8"
-            result = json.loads(response.read().decode(charset))
-    except (json.JSONDecodeError, OSError) as exc:
-        return CheckOutcome(False, f"{ip_address} ({exc})")
-    if dns4me_check_passed(result):
-        return CheckOutcome(True, f"{ip_address} returned PASS")
-    return CheckOutcome(False, f"{ip_address} returned {json.dumps(result, sort_keys=True)}")
+def _set_check_domain_forwarder(client: UnifiClient, server: str) -> None:
+    body = build_forward_domain_body("dns4me.net", server)
+    policies = [
+        policy
+        for policy in client.list_dns_policies()
+        if policy.type == "FORWARD_DOMAIN" and policy.name == "dns4me.net"
+    ]
+    if policies:
+        client.update_dns_policy(policies[0].id, body)
+        print(f"updated check forwarder: dns4me.net -> {server}", flush=True)
+        return
+    client.create_dns_policy(body)
+    print(f"created check forwarder: dns4me.net -> {server}", flush=True)
 
 
 def _alternate_server_index(*, current_server_index: int) -> int:
@@ -566,19 +487,24 @@ def _heartbeat_switch_server(
     delete_stale: bool,
 ) -> bool:
     try:
+        state = load_state(config.state_path)
         rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
         if not rules:
             print("Heartbeat resolver switch skipped because DNS4ME returned no rules.", file=sys.stderr, flush=True)
             return False
         target_server = _dns4me_server_for_index(rules, target_server_index)
+        active_server = _dns4me_server_for_index(rules, state.active_server_index)
         print(
             f"Heartbeat preflight for DNS4ME server index {target_server_index} "
-            f"({target_server}) using container-local DNS.",
+            f"({target_server}) using UniFi check-domain forwarding.",
             flush=True,
         )
-        target_check = _dns4me_server_health_check(target_server)
-        print(f"Heartbeat preflight result: {target_check.message}", flush=True)
-        if not target_check.ok:
+        if not _unifi_check_domain_preflight(
+            config,
+            target_server=target_server,
+            active_server=active_server,
+            dry_run=dry_run,
+        ):
             print(
                 f"Heartbeat resolver switch skipped because DNS4ME server index "
                 f"{target_server_index} did not pass validation.",
@@ -658,6 +584,7 @@ def _doctor(config: Config) -> int:
     print(f"Max DNS4ME servers per domain: {config.max_servers_per_domain}")
     print(f"State path: {config.state_path}")
     print(f"Check after sync: {config.check_after_sync}")
+    print(f"Check after sync delay seconds: {config.check_after_sync_delay_seconds}")
     print(f"Include dns4me.net forwarder: {config.include_check_domain}")
     internet_checks = ", ".join(f"{host}:{port}" for host, port in config.heartbeat_internet_checks)
     print(f"Heartbeat internet checks: {internet_checks}")
@@ -773,6 +700,9 @@ def _sync(
     print(f"Unchanged: {len(plan.unchanged)}")
     print(f"Updates needed: {len(plan.updates)}")
     print(f"Creates needed: {len(plan.creates)}")
+    writes_needed = len(plan.updates) + len(plan.creates)
+    if delete_stale:
+        writes_needed += len(plan.stale)
 
     for update in plan.updates:
         body = build_forward_domain_body(update.rule.domain, update.rule.server)
@@ -819,6 +749,13 @@ def _sync(
         print(f"State saved: {config.state_path}")
 
     if check_after_sync:
+        if not dry_run and writes_needed > 0 and config.check_after_sync_delay_seconds > 0:
+            print(
+                f"Waiting {config.check_after_sync_delay_seconds}s before DNS4ME check "
+                f"so UniFi DNS changes can settle.",
+                flush=True,
+            )
+            time.sleep(config.check_after_sync_delay_seconds)
         return _check()
 
     return 0
@@ -1038,6 +975,7 @@ def _load_config() -> Config:
         max_servers_per_domain=_env_int("DNS4ME_MAX_SERVERS_PER_DOMAIN", default=1),
         state_path=os.getenv("STATE_PATH", ".unifi-dns4me-state.json"),
         check_after_sync=_env_bool("CHECK_AFTER_SYNC", default=False),
+        check_after_sync_delay_seconds=_env_nonnegative_int("CHECK_AFTER_SYNC_DELAY_SECONDS", default=10),
         include_check_domain=_env_bool("DNS4ME_INCLUDE_CHECK_DOMAIN", default=True),
         heartbeat_internet_checks=_env_internet_checks(),
         heartbeat_dns_check_domains=tuple(
@@ -1087,6 +1025,13 @@ def _env_positive_int(name: str, *, default: int) -> int:
     value = _env_int(name, default=default)
     if value < 1:
         raise RuntimeError(f"{name} must be 1 or greater.")
+    return value
+
+
+def _env_nonnegative_int(name: str, *, default: int) -> int:
+    value = _env_int(name, default=default)
+    if value < 0:
+        raise RuntimeError(f"{name} must be 0 or greater.")
     return value
 
 

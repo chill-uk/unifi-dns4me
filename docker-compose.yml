@@ -21,6 +21,7 @@ services:
       # SYNC_AT: "03:15"
       # DELETE_STALE: "true"
       # CHECK_AFTER_SYNC: "true"
+      # CHECK_AFTER_SYNC_DELAY_SECONDS: "10"
       # HEARTBEAT_ENABLED: "true"
       # HEARTBEAT_INTERVAL_SECONDS: "300"
       # HEARTBEAT_FAILURES_BEFORE_SWITCH: "2"

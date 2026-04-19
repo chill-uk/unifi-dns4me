@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from unifi_dns4me.cli import (
     _env_internet_checks,
+    _env_nonnegative_int,
     _env_positive_int,
     _env_positive_int_alias,
     _parse_csv,
@@ -46,6 +47,10 @@ class HeartbeatConfigTest(unittest.TestCase):
         with patch.dict("os.environ", {"HEARTBEAT_INTERVAL_SECONDS": "0"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "1 or greater"):
                 _env_positive_int("HEARTBEAT_INTERVAL_SECONDS", default=300)
+
+    def test_nonnegative_int_allows_zero(self) -> None:
+        with patch.dict("os.environ", {"CHECK_AFTER_SYNC_DELAY_SECONDS": "0"}, clear=True):
+            self.assertEqual(_env_nonnegative_int("CHECK_AFTER_SYNC_DELAY_SECONDS", default=10), 0)
 
     def test_positive_int_alias_prefers_new_env_name(self) -> None:
         with patch.dict(
