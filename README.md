@@ -147,6 +147,19 @@ Check logs:
 docker compose logs -f
 ```
 
+With heartbeat enabled, the daemon logs each heartbeat run between daily syncs:
+
+```text
+Heartbeat started at 2026-04-19T14:10:58. Active DNS4ME server index: 1.
+Heartbeat internet check passed: 1.1.1.1:443
+Heartbeat DNS check passed: cloudflare.com
+Heartbeat HTTP check passed: https://cloudflare.com/cdn-cgi/trace HTTP 200
+Heartbeat DNS4ME check passed
+Heartbeat DNS4ME PASS. Consecutive successes: 1/2.
+```
+
+If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures and skips fallback decisions for that heartbeat.
+
 ### Testing / manual runs
 
 Run a one-shot dry-run:
@@ -238,7 +251,8 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - If the state file is accidentally deleted, `populate-state` rebuilds it from DNS4ME rules that already exist as UniFi Forward Domain policies. It does not create, update, or delete UniFi policies.
 - The DNS4ME check is only meaningful from a host or container whose DNS lookups use the UniFi gateway/DNS path you are configuring.
 - `CHECK_AFTER_SYNC` only runs and reports the DNS4ME status check after sync. Resolver switching belongs to the heartbeat flow, which can wait for repeated failures before changing forwarders.
-- Future heartbeat checks can distinguish "DNS4ME is down" from "the internet or general DNS is down" using TCP internet checks, normal DNS lookups, and optional HTTP requests. Configure multiple checks with the `HEARTBEAT_*` variables so one upstream service outage does not trigger fallback on its own. The older single-value variables `HEARTBEAT_INTERNET_CHECK_HOST`, `HEARTBEAT_INTERNET_CHECK_PORT`, `HEARTBEAT_DNS_CHECK_DOMAIN`, and `HEARTBEAT_HTTP_CHECK_URL` still work for existing installs.
+- Heartbeat checks distinguish "DNS4ME is down" from "the internet or general DNS is down" using TCP internet checks, normal DNS lookups, and HTTP requests. Configure multiple checks with the `HEARTBEAT_*` variables so one upstream service outage does not trigger fallback on its own. The older single-value variables `HEARTBEAT_INTERNET_CHECK_HOST`, `HEARTBEAT_INTERNET_CHECK_PORT`, `HEARTBEAT_DNS_CHECK_DOMAIN`, and `HEARTBEAT_HTTP_CHECK_URL` still work for existing installs.
+- If heartbeat sees enough DNS4ME failures while prerequisites are healthy, it switches managed forwarders to server index `2`. If DNS4ME later recovers and `HEARTBEAT_RESTORE_PRIMARY=true`, it switches back to server index `1` after enough consecutive successes.
 - UniFi's local API documentation is available in UniFi Network under `Integrations`.
 
 ## Troubleshooting

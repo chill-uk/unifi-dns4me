@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Iterable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .dns4me import (
     ForwardRule,
@@ -55,6 +59,25 @@ class SyncPlan:
     updates: list[PolicyUpdate]
     creates: list[ForwardRule]
     stale: list[DnsPolicy]
+
+
+@dataclass
+class HeartbeatRuntime:
+    consecutive_failures: int = 0
+    consecutive_successes: int = 0
+
+
+@dataclass(frozen=True)
+class CheckOutcome:
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class HeartbeatOutcome:
+    prerequisites_ok: bool
+    dns4me_ok: bool
+    details: tuple[str, ...]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,20 +205,35 @@ def _daemon(
     check_after_sync: bool,
 ) -> int:
     scheduled_time = _parse_daily_time(at)
+    heartbeat = HeartbeatRuntime()
     print(
         f"Scheduler started. Daily sync time: {at}. Dry run: {dry_run}. "
         f"DNS4ME check after sync: {check_after_sync}.",
         flush=True,
     )
+    if config.heartbeat_enabled:
+        print(
+            f"Heartbeat enabled. Interval: {config.heartbeat_interval_seconds}s. "
+            f"Failures before fallback: {config.heartbeat_failures_before_fallback}. "
+            f"Successes before restore: {config.heartbeat_successes_before_restore}.",
+            flush=True,
+        )
+    else:
+        print("Heartbeat disabled.", flush=True)
 
     if run_on_start:
         _run_scheduled_sync(config, dry_run=dry_run, delete_stale=delete_stale, check_after_sync=check_after_sync)
 
     while True:
         next_run = _next_daily_run(datetime.now(), scheduled_time)
-        sleep_seconds = max(1, int((next_run - datetime.now()).total_seconds()))
         print(f"Next sync: {next_run.isoformat(timespec='minutes')}", flush=True)
-        time.sleep(sleep_seconds)
+        _wait_until_next_sync(
+            config,
+            next_run=next_run,
+            heartbeat=heartbeat,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+        )
         _run_scheduled_sync(config, dry_run=dry_run, delete_stale=delete_stale, check_after_sync=check_after_sync)
 
 
@@ -213,6 +251,210 @@ def _run_scheduled_sync(config: Config, *, dry_run: bool, delete_stale: bool, ch
             print(f"Scheduled sync finished with errors at {datetime.now().isoformat(timespec='seconds')}", flush=True)
     except (RuntimeError, UnifiApiError) as exc:
         print(f"Scheduled sync failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _wait_until_next_sync(
+    config: Config,
+    *,
+    next_run: datetime,
+    heartbeat: HeartbeatRuntime,
+    dry_run: bool,
+    delete_stale: bool,
+) -> None:
+    while True:
+        remaining = int((next_run - datetime.now()).total_seconds())
+        if remaining <= 0:
+            return
+        if not config.heartbeat_enabled:
+            time.sleep(max(1, remaining))
+            return
+
+        sleep_seconds = max(1, min(config.heartbeat_interval_seconds, remaining))
+        time.sleep(sleep_seconds)
+        if datetime.now() < next_run:
+            _run_heartbeat(config, heartbeat=heartbeat, dry_run=dry_run, delete_stale=delete_stale)
+
+
+def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool, delete_stale: bool) -> None:
+    started_at = datetime.now().isoformat(timespec="seconds")
+    state = load_state(config.state_path)
+    print(f"Heartbeat started at {started_at}. Active DNS4ME server index: {state.active_server_index}.", flush=True)
+
+    outcome = _heartbeat_checks(config)
+    for detail in outcome.details:
+        print(f"Heartbeat {detail}", flush=True)
+
+    if not outcome.prerequisites_ok:
+        heartbeat.consecutive_failures = 0
+        heartbeat.consecutive_successes = 0
+        print("Heartbeat skipped DNS4ME fallback decision because prerequisite checks failed.", flush=True)
+        return
+
+    if outcome.dns4me_ok:
+        heartbeat.consecutive_failures = 0
+        heartbeat.consecutive_successes += 1
+        print(
+            f"Heartbeat DNS4ME PASS. Consecutive successes: "
+            f"{heartbeat.consecutive_successes}/{config.heartbeat_successes_before_restore}.",
+            flush=True,
+        )
+        if (
+            config.heartbeat_restore_primary
+            and state.active_server_index != 1
+            and heartbeat.consecutive_successes >= config.heartbeat_successes_before_restore
+        ):
+            print("Heartbeat restoring primary DNS4ME resolver.", flush=True)
+            if _heartbeat_switch_server(config, target_server_index=1, dry_run=dry_run, delete_stale=delete_stale):
+                heartbeat.consecutive_successes = 0
+        return
+
+    heartbeat.consecutive_successes = 0
+    heartbeat.consecutive_failures += 1
+    print(
+        f"Heartbeat DNS4ME FAIL. Consecutive failures: "
+        f"{heartbeat.consecutive_failures}/{config.heartbeat_failures_before_fallback}.",
+        flush=True,
+    )
+    if state.active_server_index != 1:
+        print("Heartbeat is already using a fallback DNS4ME resolver; no fallback switch needed.", flush=True)
+        return
+    if heartbeat.consecutive_failures < config.heartbeat_failures_before_fallback:
+        return
+
+    target_server_index = _fallback_server_index(current_server_index=state.active_server_index)
+    if target_server_index == state.active_server_index:
+        print("Heartbeat could not infer a fallback DNS4ME resolver from current state.", file=sys.stderr, flush=True)
+        return
+
+    print(f"Heartbeat switching to DNS4ME server index {target_server_index}.", file=sys.stderr, flush=True)
+    if _heartbeat_switch_server(
+        config,
+        target_server_index=target_server_index,
+        dry_run=dry_run,
+        delete_stale=delete_stale,
+    ):
+        heartbeat.consecutive_failures = 0
+
+
+def _heartbeat_checks(config: Config) -> HeartbeatOutcome:
+    details: list[str] = []
+
+    internet = _first_success(
+        (_tcp_check(host, port) for host, port in config.heartbeat_internet_checks),
+        success_prefix="internet check passed",
+        failure_prefix="internet checks failed",
+    )
+    details.append(internet.message)
+
+    dns = _first_success(
+        (_dns_check(domain) for domain in config.heartbeat_dns_check_domains),
+        success_prefix="DNS check passed",
+        failure_prefix="DNS checks failed",
+    )
+    details.append(dns.message)
+
+    http = _first_success(
+        (_http_check(url) for url in config.heartbeat_http_check_urls),
+        success_prefix="HTTP check passed",
+        failure_prefix="HTTP checks failed",
+    )
+    details.append(http.message)
+
+    prerequisites_ok = internet.ok and dns.ok and http.ok
+    if not prerequisites_ok:
+        return HeartbeatOutcome(prerequisites_ok=False, dns4me_ok=False, details=tuple(details))
+
+    dns4me = _dns4me_health_check()
+    details.append(dns4me.message)
+    return HeartbeatOutcome(prerequisites_ok=True, dns4me_ok=dns4me.ok, details=tuple(details))
+
+
+def _first_success(outcomes: Iterable[CheckOutcome], *, success_prefix: str, failure_prefix: str) -> CheckOutcome:
+    failures: list[str] = []
+    for outcome in outcomes:
+        if outcome.ok:
+            return CheckOutcome(True, f"{success_prefix}: {outcome.message}")
+        failures.append(outcome.message)
+    return CheckOutcome(False, f"{failure_prefix}: {'; '.join(failures)}")
+
+
+def _tcp_check(host: str, port: int, timeout: float = 5.0) -> CheckOutcome:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return CheckOutcome(True, f"{host}:{port}")
+    except OSError as exc:
+        return CheckOutcome(False, f"{host}:{port} ({exc})")
+
+
+def _dns_check(domain: str) -> CheckOutcome:
+    try:
+        socket.getaddrinfo(domain, None)
+        return CheckOutcome(True, domain)
+    except OSError as exc:
+        return CheckOutcome(False, f"{domain} ({exc})")
+
+
+def _http_check(url: str, timeout: float = 10.0) -> CheckOutcome:
+    request = Request(url, headers={"User-Agent": "unifi-dns4me/0.1"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = response.status
+        if status < 500:
+            return CheckOutcome(True, f"{url} HTTP {status}")
+        return CheckOutcome(False, f"{url} HTTP {status}")
+    except HTTPError as exc:
+        if exc.code < 500:
+            return CheckOutcome(True, f"{url} HTTP {exc.code}")
+        return CheckOutcome(False, f"{url} HTTP {exc.code}")
+    except URLError as exc:
+        return CheckOutcome(False, f"{url} ({exc.reason})")
+
+
+def _dns4me_health_check() -> CheckOutcome:
+    try:
+        result = fetch_dns4me_check()
+    except RuntimeError as exc:
+        return CheckOutcome(False, f"DNS4ME check failed: {exc}")
+    if dns4me_check_passed(result):
+        return CheckOutcome(True, "DNS4ME check passed")
+    return CheckOutcome(False, f"DNS4ME check failed: {json.dumps(result, sort_keys=True)}")
+
+
+def _fallback_server_index(*, current_server_index: int) -> int:
+    if current_server_index == 1:
+        return 2
+    return 1
+
+
+def _heartbeat_switch_server(
+    config: Config,
+    *,
+    target_server_index: int,
+    dry_run: bool,
+    delete_stale: bool,
+) -> bool:
+    try:
+        rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
+        if not rules:
+            print("Heartbeat resolver switch skipped because DNS4ME returned no rules.", file=sys.stderr, flush=True)
+            return False
+        result = _sync(
+            config,
+            rules,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            check_after_sync=False,
+            server_index=target_server_index,
+        )
+    except (RuntimeError, UnifiApiError) as exc:
+        print(f"Heartbeat resolver switch failed: {exc}", file=sys.stderr, flush=True)
+        return False
+
+    if result == 0:
+        print(f"Heartbeat resolver switch complete. Active DNS4ME server index: {target_server_index}.", flush=True)
+        return True
+    print("Heartbeat resolver switch finished with errors.", file=sys.stderr, flush=True)
+    return False
 
 
 def _parse_daily_time(value: str) -> tuple[int, int]:
