@@ -6,11 +6,11 @@ This setup ONLY sends DNS requests for the services you have geo-unblocked with 
 
 ## Why this exists
 
-My older gateway scripts wrote directly into dnsmasq and restarted it.
+My older gateway scripts wrote directly into unifis dnsmasq.
 
-Which worked, but suffered from some caveats:
+While this worked, it suffered from some caveats:
 
-UniFi OS updates and restarts removed those changes and needed to be loaded again at startup.
+UniFi OS updates and restarts removed those changes and they needed to be reloaded again at startup.
 
 This version uses the UniFi Network API instead:
 
@@ -113,7 +113,7 @@ unifi-dns4me sync --delete-stale
 
 ## Docker
 
-The unifi-dns4me is a lightweight image and is supported on the following platforms:
+Unifi-dns4me is a lightweight image and is supported on the following platforms:
 
 ```text
 linux/amd64
@@ -123,7 +123,7 @@ linux/arm/v7
 
 ### Compose
 
-Edit `.env` or `docker-compose.yml` your with your API keys / settings, then start the daily sync service:
+Edit `.env` or `docker-compose.yml` with your API keys / settings, then start the daily sync service:
 
 ```bash
 docker compose up -d
@@ -134,6 +134,8 @@ Check logs:
 ```bash
 docker compose logs -f
 ```
+
+### Testing / manual runs
 
 Run a one-shot dry-run:
 
