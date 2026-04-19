@@ -291,18 +291,9 @@ def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool
         return
 
     if outcome.dns4me_ok:
-        heartbeat.consecutive_failures = 0
-        heartbeat.consecutive_successes += 1
-        print(
-            f"Heartbeat DNS4ME PASS. Consecutive successes: "
-            f"{heartbeat.consecutive_successes}/{config.heartbeat_successes_before_restore}.",
-            flush=True,
-        )
-        if (
-            config.heartbeat_restore_primary
-            and state.active_server_index != 1
-            and heartbeat.consecutive_successes >= config.heartbeat_successes_before_restore
-        ):
+        log_message, should_restore = _record_heartbeat_success(config, heartbeat, state)
+        print(log_message, flush=True)
+        if should_restore:
             print("Heartbeat restoring primary DNS4ME resolver.", flush=True)
             if _heartbeat_switch_server(config, target_server_index=1, dry_run=dry_run, delete_stale=delete_stale):
                 heartbeat.consecutive_successes = 0
@@ -367,6 +358,28 @@ def _heartbeat_checks(config: Config) -> HeartbeatOutcome:
     dns4me = _dns4me_health_check()
     details.append(dns4me.message)
     return HeartbeatOutcome(prerequisites_ok=True, dns4me_ok=dns4me.ok, details=tuple(details))
+
+
+def _record_heartbeat_success(
+    config: Config,
+    heartbeat: HeartbeatRuntime,
+    state: ManagedState,
+) -> tuple[str, bool]:
+    heartbeat.consecutive_failures = 0
+    if state.active_server_index == 1:
+        heartbeat.consecutive_successes = 0
+        return "Heartbeat DNS4ME PASS. Active resolver is primary.", False
+
+    if not config.heartbeat_restore_primary:
+        heartbeat.consecutive_successes = 0
+        return "Heartbeat DNS4ME PASS. Active resolver is fallback; primary restore is disabled.", False
+
+    heartbeat.consecutive_successes += 1
+    message = (
+        f"Heartbeat DNS4ME PASS. Consecutive restore successes: "
+        f"{heartbeat.consecutive_successes}/{config.heartbeat_successes_before_restore}."
+    )
+    return message, heartbeat.consecutive_successes >= config.heartbeat_successes_before_restore
 
 
 def _first_success(outcomes: Iterable[CheckOutcome], *, success_prefix: str, failure_prefix: str) -> CheckOutcome:

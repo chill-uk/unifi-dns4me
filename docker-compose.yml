@@ -2,6 +2,7 @@ services:
   unifi-dns4me:
     image: ghcr.io/chill-uk/unifi-dns4me:latest
     container_name: unifi-dns4me
+    user: "0:0"
     # Uncomment the following lines to use an .env file for environment variables
     # env_file:
       # - .env
