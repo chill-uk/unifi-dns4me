@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import patch
 
-from unifi_dns4me.cli import _env_internet_checks, _env_positive_int, _parse_csv, _parse_internet_checks
+from unifi_dns4me.cli import (
+    _env_internet_checks,
+    _env_positive_int,
+    _env_positive_int_alias,
+    _parse_csv,
+    _parse_internet_checks,
+)
 
 
 class HeartbeatConfigTest(unittest.TestCase):
@@ -40,6 +46,24 @@ class HeartbeatConfigTest(unittest.TestCase):
         with patch.dict("os.environ", {"HEARTBEAT_INTERVAL_SECONDS": "0"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "1 or greater"):
                 _env_positive_int("HEARTBEAT_INTERVAL_SECONDS", default=300)
+
+    def test_positive_int_alias_prefers_new_env_name(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "HEARTBEAT_FAILURES_BEFORE_SWITCH": "3",
+                "HEARTBEAT_FAILURES_BEFORE_FALLBACK": "2",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _env_positive_int_alias(
+                    "HEARTBEAT_FAILURES_BEFORE_SWITCH",
+                    legacy_name="HEARTBEAT_FAILURES_BEFORE_FALLBACK",
+                    default=2,
+                ),
+                3,
+            )
 
 
 if __name__ == "__main__":

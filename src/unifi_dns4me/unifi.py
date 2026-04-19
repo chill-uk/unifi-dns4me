@@ -80,7 +80,7 @@ class UnifiClient:
 
     def update_dns_policy(self, policy_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return self._request(
-            "PATCH",
+            "PUT",
             f"/proxy/network/integration/v1/sites/{self.site_id}/dns/policies/{policy_id}",
             body=body,
         )

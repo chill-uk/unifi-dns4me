@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import socket
 import sys
 import time
@@ -25,6 +26,9 @@ from .state import ManagedState, load_state, save_state
 from .unifi import DnsPolicy, UnifiApiError, UnifiClient, build_forward_domain_body
 
 
+DNS4ME_CHECK_HOST = "check.dns4me.net"
+
+
 @dataclass(frozen=True)
 class Config:
     dns4me_source_url: str
@@ -42,9 +46,8 @@ class Config:
     heartbeat_http_check_urls: tuple[str, ...]
     heartbeat_enabled: bool
     heartbeat_interval_seconds: int
-    heartbeat_failures_before_fallback: int
-    heartbeat_restore_primary: bool
-    heartbeat_successes_before_restore: int
+    heartbeat_failures_before_switch: int
+    heartbeat_switch_retry_seconds: int
 
 
 @dataclass(frozen=True)
@@ -64,7 +67,7 @@ class SyncPlan:
 @dataclass
 class HeartbeatRuntime:
     consecutive_failures: int = 0
-    consecutive_successes: int = 0
+    next_switch_attempt_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         "--server-index",
         type=int,
         default=1,
-        help="DNS4ME resolver index to populate state from. Use 2 if UniFi is currently on the fallback resolver.",
+        help="DNS4ME resolver index to populate state from. Use 2 if UniFi is currently using resolver index 2.",
     )
 
     sync = subparsers.add_parser("sync", help="Apply only necessary UniFi Forward Domain policy changes.")
@@ -214,8 +217,8 @@ def _daemon(
     if config.heartbeat_enabled:
         print(
             f"Heartbeat enabled. Interval: {config.heartbeat_interval_seconds}s. "
-            f"Failures before fallback: {config.heartbeat_failures_before_fallback}. "
-            f"Successes before restore: {config.heartbeat_successes_before_restore}.",
+            f"Failures before switch: {config.heartbeat_failures_before_switch}. "
+            f"Switch retry: {config.heartbeat_switch_retry_seconds}s.",
             flush=True,
         )
     else:
@@ -286,35 +289,35 @@ def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool
 
     if not outcome.prerequisites_ok:
         heartbeat.consecutive_failures = 0
-        heartbeat.consecutive_successes = 0
-        print("Heartbeat skipped DNS4ME fallback decision because prerequisite checks failed.", flush=True)
+        print("Heartbeat skipped DNS4ME switch decision because prerequisite checks failed.", flush=True)
         return
 
     if outcome.dns4me_ok:
-        log_message, should_restore = _record_heartbeat_success(config, heartbeat, state)
-        print(log_message, flush=True)
-        if should_restore:
-            print("Heartbeat restoring primary DNS4ME resolver.", flush=True)
-            if _heartbeat_switch_server(config, target_server_index=1, dry_run=dry_run, delete_stale=delete_stale):
-                heartbeat.consecutive_successes = 0
+        heartbeat.consecutive_failures = 0
+        print(f"Heartbeat DNS4ME PASS. Active resolver index {state.active_server_index} is healthy.", flush=True)
         return
 
-    heartbeat.consecutive_successes = 0
     heartbeat.consecutive_failures += 1
     print(
         f"Heartbeat DNS4ME FAIL. Consecutive failures: "
-        f"{heartbeat.consecutive_failures}/{config.heartbeat_failures_before_fallback}.",
+        f"{heartbeat.consecutive_failures}/{config.heartbeat_failures_before_switch}.",
         flush=True,
     )
-    if state.active_server_index != 1:
-        print("Heartbeat is already using a fallback DNS4ME resolver; no fallback switch needed.", flush=True)
-        return
-    if heartbeat.consecutive_failures < config.heartbeat_failures_before_fallback:
+    if heartbeat.consecutive_failures < config.heartbeat_failures_before_switch:
         return
 
-    target_server_index = _fallback_server_index(current_server_index=state.active_server_index)
+    now = datetime.now()
+    if heartbeat.next_switch_attempt_at and now < heartbeat.next_switch_attempt_at:
+        print(
+            f"Heartbeat resolver switch retry cooldown active until "
+            f"{heartbeat.next_switch_attempt_at.isoformat(timespec='seconds')}.",
+            flush=True,
+        )
+        return
+
+    target_server_index = _alternate_server_index(current_server_index=state.active_server_index)
     if target_server_index == state.active_server_index:
-        print("Heartbeat could not infer a fallback DNS4ME resolver from current state.", file=sys.stderr, flush=True)
+        print("Heartbeat could not infer an alternate DNS4ME resolver from current state.", file=sys.stderr, flush=True)
         return
 
     print(f"Heartbeat switching to DNS4ME server index {target_server_index}.", file=sys.stderr, flush=True)
@@ -325,6 +328,14 @@ def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool
         delete_stale=delete_stale,
     ):
         heartbeat.consecutive_failures = 0
+        heartbeat.next_switch_attempt_at = None
+    else:
+        heartbeat.next_switch_attempt_at = now + timedelta(seconds=config.heartbeat_switch_retry_seconds)
+        print(
+            f"Heartbeat will not retry a resolver switch until "
+            f"{heartbeat.next_switch_attempt_at.isoformat(timespec='seconds')}.",
+            flush=True,
+        )
 
 
 def _heartbeat_checks(config: Config) -> HeartbeatOutcome:
@@ -358,28 +369,6 @@ def _heartbeat_checks(config: Config) -> HeartbeatOutcome:
     dns4me = _dns4me_health_check()
     details.append(dns4me.message)
     return HeartbeatOutcome(prerequisites_ok=True, dns4me_ok=dns4me.ok, details=tuple(details))
-
-
-def _record_heartbeat_success(
-    config: Config,
-    heartbeat: HeartbeatRuntime,
-    state: ManagedState,
-) -> tuple[str, bool]:
-    heartbeat.consecutive_failures = 0
-    if state.active_server_index == 1:
-        heartbeat.consecutive_successes = 0
-        return "Heartbeat DNS4ME PASS. Active resolver is primary.", False
-
-    if not config.heartbeat_restore_primary:
-        heartbeat.consecutive_successes = 0
-        return "Heartbeat DNS4ME PASS. Active resolver is fallback; primary restore is disabled.", False
-
-    heartbeat.consecutive_successes += 1
-    message = (
-        f"Heartbeat DNS4ME PASS. Consecutive restore successes: "
-        f"{heartbeat.consecutive_successes}/{config.heartbeat_successes_before_restore}."
-    )
-    return message, heartbeat.consecutive_successes >= config.heartbeat_successes_before_restore
 
 
 def _first_success(outcomes: Iterable[CheckOutcome], *, success_prefix: str, failure_prefix: str) -> CheckOutcome:
@@ -433,7 +422,137 @@ def _dns4me_health_check() -> CheckOutcome:
     return CheckOutcome(False, f"DNS4ME check failed: {json.dumps(result, sort_keys=True)}")
 
 
-def _fallback_server_index(*, current_server_index: int) -> int:
+def _dns4me_server_health_check(server: str) -> CheckOutcome:
+    resolved = _resolve_a_via_dns_server(DNS4ME_CHECK_HOST, server)
+    if not resolved.ok:
+        return CheckOutcome(False, f"container-local check through DNS4ME resolver {server} failed: {resolved.message}")
+
+    failures: list[str] = []
+    for ip_address in resolved.message.split(", "):
+        result = _dns4me_check_at_ip(ip_address)
+        if result.ok:
+            return CheckOutcome(
+                True,
+                f"container-local check through DNS4ME resolver {server} passed "
+                f"({DNS4ME_CHECK_HOST} -> {ip_address})",
+            )
+        failures.append(result.message)
+    return CheckOutcome(
+        False,
+        f"container-local check through DNS4ME resolver {server} failed after resolving "
+        f"{DNS4ME_CHECK_HOST}: {'; '.join(failures)}",
+    )
+
+
+def _resolve_a_via_dns_server(domain: str, server: str, timeout: float = 5.0) -> CheckOutcome:
+    query_id = random.randint(0, 65535)
+    query = _build_dns_a_query(domain, query_id)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.sendto(query, (server, 53))
+            response, _ = sock.recvfrom(4096)
+    except OSError as exc:
+        return CheckOutcome(False, f"{server} DNS query for {domain} failed: {exc}")
+
+    try:
+        addresses = _parse_dns_a_response(response, query_id)
+    except ValueError as exc:
+        return CheckOutcome(False, f"{server} DNS response for {domain} was invalid: {exc}")
+    if not addresses:
+        return CheckOutcome(False, f"{server} returned no A records for {domain}")
+    return CheckOutcome(True, ", ".join(addresses))
+
+
+def _build_dns_a_query(domain: str, query_id: int) -> bytes:
+    header = query_id.to_bytes(2, "big")
+    header += b"\x01\x00"
+    header += (1).to_bytes(2, "big")
+    header += (0).to_bytes(2, "big")
+    header += (0).to_bytes(2, "big")
+    header += (0).to_bytes(2, "big")
+    question = b"".join(bytes([len(label)]) + label.encode("ascii") for label in domain.rstrip(".").split("."))
+    question += b"\x00"
+    question += (1).to_bytes(2, "big")
+    question += (1).to_bytes(2, "big")
+    return header + question
+
+
+def _parse_dns_a_response(response: bytes, expected_query_id: int) -> list[str]:
+    if len(response) < 12:
+        raise ValueError("response was too short")
+    query_id = int.from_bytes(response[0:2], "big")
+    if query_id != expected_query_id:
+        raise ValueError("response id did not match query")
+    flags = int.from_bytes(response[2:4], "big")
+    if flags & 0x000F:
+        raise ValueError(f"DNS rcode {flags & 0x000F}")
+
+    question_count = int.from_bytes(response[4:6], "big")
+    answer_count = int.from_bytes(response[6:8], "big")
+    offset = 12
+    for _ in range(question_count):
+        offset = _skip_dns_name(response, offset)
+        offset += 4
+
+    addresses: list[str] = []
+    for _ in range(answer_count):
+        offset = _skip_dns_name(response, offset)
+        if offset + 10 > len(response):
+            raise ValueError("answer record was truncated")
+        record_type = int.from_bytes(response[offset : offset + 2], "big")
+        record_class = int.from_bytes(response[offset + 2 : offset + 4], "big")
+        data_length = int.from_bytes(response[offset + 8 : offset + 10], "big")
+        offset += 10
+        if offset + data_length > len(response):
+            raise ValueError("answer data was truncated")
+        data = response[offset : offset + data_length]
+        offset += data_length
+        if record_type == 1 and record_class == 1 and data_length == 4:
+            addresses.append(socket.inet_ntoa(data))
+    return addresses
+
+
+def _skip_dns_name(packet: bytes, offset: int) -> int:
+    while True:
+        if offset >= len(packet):
+            raise ValueError("name was truncated")
+        length = packet[offset]
+        if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(packet):
+                raise ValueError("compressed name was truncated")
+            return offset + 2
+        if length == 0:
+            return offset + 1
+        offset += 1 + length
+
+
+def _dns4me_check_at_ip(ip_address: str, timeout: float = 10.0) -> CheckOutcome:
+    cache_buster = int(time.time() * 1000)
+    request = Request(
+        f"http://{ip_address}/?_={cache_buster}",
+        headers={
+            "Accept": "application/json, */*",
+            "Cache-Control": "no-cache",
+            "Host": DNS4ME_CHECK_HOST,
+            "Pragma": "no-cache",
+            "Referer": "http://dns4me.net/",
+            "Origin": "http://dns4me.net",
+            "User-Agent": "unifi-dns4me/0.1",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            result = json.loads(response.read().decode(charset))
+    except (json.JSONDecodeError, OSError) as exc:
+        return CheckOutcome(False, f"{ip_address} ({exc})")
+    if dns4me_check_passed(result):
+        return CheckOutcome(True, f"{ip_address} returned PASS")
+    return CheckOutcome(False, f"{ip_address} returned {json.dumps(result, sort_keys=True)}")
+
+
+def _alternate_server_index(*, current_server_index: int) -> int:
     if current_server_index == 1:
         return 2
     return 1
@@ -450,6 +569,22 @@ def _heartbeat_switch_server(
         rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
         if not rules:
             print("Heartbeat resolver switch skipped because DNS4ME returned no rules.", file=sys.stderr, flush=True)
+            return False
+        target_server = _dns4me_server_for_index(rules, target_server_index)
+        print(
+            f"Heartbeat preflight for DNS4ME server index {target_server_index} "
+            f"({target_server}) using container-local DNS.",
+            flush=True,
+        )
+        target_check = _dns4me_server_health_check(target_server)
+        print(f"Heartbeat preflight result: {target_check.message}", flush=True)
+        if not target_check.ok:
+            print(
+                f"Heartbeat resolver switch skipped because DNS4ME server index "
+                f"{target_server_index} did not pass validation.",
+                file=sys.stderr,
+                flush=True,
+            )
             return False
         result = _sync(
             config,
@@ -530,9 +665,8 @@ def _doctor(config: Config) -> int:
     print(f"Heartbeat HTTP check URLs: {', '.join(config.heartbeat_http_check_urls)}")
     print(f"Heartbeat enabled: {config.heartbeat_enabled}")
     print(f"Heartbeat interval seconds: {config.heartbeat_interval_seconds}")
-    print(f"Heartbeat failures before fallback: {config.heartbeat_failures_before_fallback}")
-    print(f"Heartbeat restore primary: {config.heartbeat_restore_primary}")
-    print(f"Heartbeat successes before restore: {config.heartbeat_successes_before_restore}")
+    print(f"Heartbeat failures before switch: {config.heartbeat_failures_before_switch}")
+    print(f"Heartbeat switch retry seconds: {config.heartbeat_switch_retry_seconds}")
 
     if config.unifi_api_key != config.unifi_api_key.strip():
         print("Warning: UNIFI_API_KEY has leading or trailing whitespace.")
@@ -817,6 +951,15 @@ def _dns4me_servers_from_rules(rules: list[ForwardRule]) -> tuple[str, ...]:
     return tuple(sorted({rule.server for rule in rules}))
 
 
+def _dns4me_server_for_index(rules: list[ForwardRule], server_index: int) -> str:
+    servers = _dns4me_servers_from_rules(rules)
+    if server_index < 1:
+        raise RuntimeError("DNS4ME server index must be 1 or greater.")
+    if server_index > len(servers):
+        raise RuntimeError(f"DNS4ME server index {server_index} is unavailable; DNS4ME returned {len(servers)} server(s).")
+    return servers[server_index - 1]
+
+
 def _select_wanted_rules(
     rules: list[ForwardRule],
     *,
@@ -914,9 +1057,12 @@ def _load_config() -> Config:
         ),
         heartbeat_enabled=_env_bool("HEARTBEAT_ENABLED", default=True),
         heartbeat_interval_seconds=_env_positive_int("HEARTBEAT_INTERVAL_SECONDS", default=300),
-        heartbeat_failures_before_fallback=_env_positive_int("HEARTBEAT_FAILURES_BEFORE_FALLBACK", default=2),
-        heartbeat_restore_primary=_env_bool("HEARTBEAT_RESTORE_PRIMARY", default=True),
-        heartbeat_successes_before_restore=_env_positive_int("HEARTBEAT_SUCCESSES_BEFORE_RESTORE", default=2),
+        heartbeat_failures_before_switch=_env_positive_int_alias(
+            "HEARTBEAT_FAILURES_BEFORE_SWITCH",
+            legacy_name="HEARTBEAT_FAILURES_BEFORE_FALLBACK",
+            default=2,
+        ),
+        heartbeat_switch_retry_seconds=_env_positive_int("HEARTBEAT_SWITCH_RETRY_SECONDS", default=600),
     )
 
 
@@ -942,6 +1088,12 @@ def _env_positive_int(name: str, *, default: int) -> int:
     if value < 1:
         raise RuntimeError(f"{name} must be 1 or greater.")
     return value
+
+
+def _env_positive_int_alias(name: str, *, legacy_name: str, default: int) -> int:
+    if os.getenv(name) is not None:
+        return _env_positive_int(name, default=default)
+    return _env_positive_int(legacy_name, default=default)
 
 
 def _env_csv(name: str, *, default: str) -> list[str]:

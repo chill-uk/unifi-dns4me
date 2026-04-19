@@ -142,7 +142,7 @@ class SyncPlanTest(unittest.TestCase):
             ],
         )
 
-    def test_can_select_secondary_server_for_fallback(self) -> None:
+    def test_can_select_second_server_index(self) -> None:
         plan = _plan_sync(
             existing=[policy("1", "example.com", "1.1.1.1", description=None)],
             rules=[
@@ -162,7 +162,7 @@ class SyncPlanTest(unittest.TestCase):
         self.assertEqual(plan.creates, [])
         self.assertEqual(plan.stale, [])
 
-    def test_fallback_uses_primary_when_domain_has_no_secondary(self) -> None:
+    def test_second_server_index_uses_first_when_domain_has_no_second(self) -> None:
         plan = _plan_sync(
             existing=[],
             rules=[ForwardRule("example.com", "1.1.1.1")],

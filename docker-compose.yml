@@ -23,9 +23,8 @@ services:
       # CHECK_AFTER_SYNC: "true"
       # HEARTBEAT_ENABLED: "true"
       # HEARTBEAT_INTERVAL_SECONDS: "300"
-      # HEARTBEAT_FAILURES_BEFORE_FALLBACK: "2"
-      # HEARTBEAT_RESTORE_PRIMARY: "true"
-      # HEARTBEAT_SUCCESSES_BEFORE_RESTORE: "2"
+      # HEARTBEAT_FAILURES_BEFORE_SWITCH: "2"
+      # HEARTBEAT_SWITCH_RETRY_SECONDS: "600"
       # HEARTBEAT_INTERNET_CHECKS: 1.1.1.1:443,8.8.8.8:443,9.9.9.9:443
       # HEARTBEAT_DNS_CHECK_DOMAINS: cloudflare.com,dns.google,quad9.net
       # HEARTBEAT_HTTP_CHECK_URLS: https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/

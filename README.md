@@ -117,7 +117,7 @@ Rebuild the state file if it was accidentally deleted:
 unifi-dns4me populate-state
 ```
 
-If UniFi is currently using DNS4ME's fallback/secondary resolver, populate state from server index `2`:
+If UniFi is currently using DNS4ME resolver index `2`, populate state from server index `2`:
 
 ```bash
 unifi-dns4me populate-state --server-index 2
@@ -155,10 +155,16 @@ Heartbeat internet check passed: 1.1.1.1:443
 Heartbeat DNS check passed: cloudflare.com
 Heartbeat HTTP check passed: https://cloudflare.com/cdn-cgi/trace HTTP 200
 Heartbeat DNS4ME check passed
-Heartbeat DNS4ME PASS. Consecutive successes: 1/2.
+Heartbeat DNS4ME PASS. Active resolver index 1 is healthy.
 ```
 
-If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures and skips fallback decisions for that heartbeat.
+If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures and skips resolver switch decisions for that heartbeat.
+Before switching resolvers, heartbeat also runs a container-local preflight against the target DNS4ME resolver and skips the UniFi write if that resolver does not pass.
+
+```text
+Heartbeat preflight for DNS4ME server index 2 (3.10.65.125) using container-local DNS.
+Heartbeat preflight result: container-local check through DNS4ME resolver 3.10.65.125 passed (check.dns4me.net -> x.x.x.x)
+```
 
 ### Testing / manual runs
 
@@ -186,7 +192,7 @@ Rebuild the state file if the Docker volume or `state.json` was accidentally del
 docker compose run --rm unifi-dns4me populate-state
 ```
 
-If UniFi is currently using DNS4ME's fallback/secondary resolver:
+If UniFi is currently using DNS4ME resolver index `2`:
 
 ```bash
 docker compose run --rm unifi-dns4me populate-state --server-index 2
@@ -210,9 +216,8 @@ docker compose run --rm unifi-dns4me populate-state --server-index 2
 | `CHECK_AFTER_SYNC` | no | Run `http://check.dns4me.net` after sync. Defaults to `true`. |
 | `HEARTBEAT_ENABLED` | no | Enable periodic DNS4ME health checks while the daemon is running. Defaults to `true`. |
 | `HEARTBEAT_INTERVAL_SECONDS` | no | Seconds between heartbeat checks. Defaults to `300`. |
-| `HEARTBEAT_FAILURES_BEFORE_FALLBACK` | no | Consecutive DNS4ME check failures before switching to the fallback resolver. Defaults to `2`. |
-| `HEARTBEAT_RESTORE_PRIMARY` | no | Switch back to the primary resolver after DNS4ME recovers. Defaults to `true`. |
-| `HEARTBEAT_SUCCESSES_BEFORE_RESTORE` | no | Consecutive DNS4ME check successes before restoring the primary resolver. Defaults to `2`. |
+| `HEARTBEAT_FAILURES_BEFORE_SWITCH` | no | Consecutive active DNS4ME resolver failures before trying the alternate resolver. Defaults to `2`. |
+| `HEARTBEAT_SWITCH_RETRY_SECONDS` | no | Cooldown before retrying a failed resolver switch attempt. Defaults to `600`. |
 | `HEARTBEAT_INTERNET_CHECKS` | no | Comma-separated `host:port` TCP checks used to confirm internet reachability. Defaults to `1.1.1.1:443,8.8.8.8:443,9.9.9.9:443`. |
 | `HEARTBEAT_DNS_CHECK_DOMAINS` | no | Comma-separated domains used for the heartbeat general DNS check. Defaults to `cloudflare.com,dns.google,quad9.net`. |
 | `HEARTBEAT_HTTP_CHECK_URLS` | no | Comma-separated URLs used for the heartbeat general HTTP check. Defaults to `https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/`. |
@@ -251,8 +256,8 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - If the state file is accidentally deleted, `populate-state` rebuilds it from DNS4ME rules that already exist as UniFi Forward Domain policies. It does not create, update, or delete UniFi policies.
 - The DNS4ME check is only meaningful from a host or container whose DNS lookups use the UniFi gateway/DNS path you are configuring.
 - `CHECK_AFTER_SYNC` only runs and reports the DNS4ME status check after sync. Resolver switching belongs to the heartbeat flow, which can wait for repeated failures before changing forwarders.
-- Heartbeat checks distinguish "DNS4ME is down" from "the internet or general DNS is down" using TCP internet checks, normal DNS lookups, and HTTP requests. Configure multiple checks with the `HEARTBEAT_*` variables so one upstream service outage does not trigger fallback on its own. The older single-value variables `HEARTBEAT_INTERNET_CHECK_HOST`, `HEARTBEAT_INTERNET_CHECK_PORT`, `HEARTBEAT_DNS_CHECK_DOMAIN`, and `HEARTBEAT_HTTP_CHECK_URL` still work for existing installs.
-- If heartbeat sees enough DNS4ME failures while prerequisites are healthy, it switches managed forwarders to server index `2`. If DNS4ME later recovers and `HEARTBEAT_RESTORE_PRIMARY=true`, it switches back to server index `1` after enough consecutive successes.
+- Heartbeat checks distinguish "DNS4ME is down" from "the internet or general DNS is down" using TCP internet checks, normal DNS lookups, and HTTP requests. Configure multiple checks with the `HEARTBEAT_*` variables so one upstream service outage does not trigger a resolver switch on its own. The older single-value variables `HEARTBEAT_INTERNET_CHECK_HOST`, `HEARTBEAT_INTERNET_CHECK_PORT`, `HEARTBEAT_DNS_CHECK_DOMAIN`, and `HEARTBEAT_HTTP_CHECK_URL` still work for existing installs.
+- If heartbeat sees enough active DNS4ME resolver failures while prerequisites are healthy, it validates and switches to the alternate resolver. It does not prefer server index `1`; whichever resolver is currently working stays active until it fails.
 - UniFi's local API documentation is available in UniFi Network under `Integrations`.
 
 ## Troubleshooting
