@@ -66,7 +66,6 @@ def _parse_managed_rules(data: dict[str, Any]) -> set[ForwardRule]:
 
 def save_state(path: str, state: ManagedState) -> None:
     state_path = Path(path)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
         "version": STATE_VERSION,
         "active_server_index": state.active_server_index,
@@ -76,10 +75,14 @@ def save_state(path: str, state: ManagedState) -> None:
     data["managed_rules"] = [asdict(rule) for rule in sorted(state.managed_rules)]
 
     temp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
-    with temp_path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\n")
-    temp_path.replace(state_path)
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+        temp_path.replace(state_path)
+    except OSError as exc:
+        raise RuntimeError(f"Could not write state file {state_path}: {exc}") from exc
 
 
 def save_managed_rules(path: str, rules: set[ForwardRule]) -> None:

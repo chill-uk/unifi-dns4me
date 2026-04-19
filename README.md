@@ -260,6 +260,12 @@ set -a
 set +a
 ```
 
+### Permission denied writing `/data/state.json.tmp`
+
+The container needs write access to `/data` so it can atomically save the state file. The image runs as root by default to avoid bind-mount ownership problems on NAS/appdata paths.
+
+If you override the container user, make sure that user can write to the mounted `/data` directory.
+
 ### TLS or certificate errors
 
 Local UniFi consoles often use self-signed certificates. Set:

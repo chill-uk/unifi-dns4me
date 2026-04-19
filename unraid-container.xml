@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>unifi-dns4me</Name>
+  <Repository>ghcr.io/chill-uk/unifi-dns4me:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/chill-uk/unifi-dns4me</Support>
+  <Project>https://github.com/chill-uk/unifi-dns4me</Project>
+  <Overview>Automation of DNS4ME DNS forwarding on UniFi gateways.</Overview>
+  <Category>Network:Management</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/chill-uk/unifi-dns4me/main/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="AppData" Target="/data" Default="/mnt/user/appdata/unifi-dns4me" Mode="rw" Description="Persistent app data and state.json" Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="DNS4ME API Key" Target="DNS4ME_API_KEY" Default="" Mode="" Description="Required unless DNS4ME_DNSMASQ_URL is used instead" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="UniFi API Key" Target="UNIFI_API_KEY" Default="" Mode="" Description="Required UniFi API key" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="State Path" Target="STATE_PATH" Default="/data/state.json" Mode="" Description="Path to persistent state file" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="Europe/Amsterdam" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="UniFi Host" Target="UNIFI_HOST" Default="https://192.168.1.1" Mode="" Description="Optional UniFi host URL" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="DNS4ME dnsmasq URL" Target="DNS4ME_DNSMASQ_URL" Default="" Mode="" Description="Optional alternative to DNS4ME_API_KEY" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="UniFi Site ID" Target="UNIFI_SITE_ID" Default="Default" Mode="" Description="Optional UniFi site ID" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Skip TLS Verify" Target="UNIFI_SKIP_TLS_VERIFY" Default="true" Mode="" Description="Set to true to skip UniFi TLS verification" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Sync At" Target="SYNC_AT" Default="03:15" Mode="" Description="Optional daily sync time in HH:MM" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Delete Stale" Target="DELETE_STALE" Default="true" Mode="" Description="Delete stale entries during sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Check After Sync" Target="CHECK_AFTER_SYNC" Default="true" Mode="" Description="Run checks after sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="Heartbeat Enabled" Target="HEARTBEAT_ENABLED" Default="true" Mode="" Description="Enable heartbeat/failover checks" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Interval Seconds" Target="HEARTBEAT_INTERVAL_SECONDS" Default="300" Mode="" Description="Heartbeat interval in seconds" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Failures Before Fallback" Target="HEARTBEAT_FAILURES_BEFORE_FALLBACK" Default="2" Mode="" Description="Number of failures before fallback" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Restore Primary" Target="HEARTBEAT_RESTORE_PRIMARY" Default="true" Mode="" Description="Restore primary automatically after recovery" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Successes Before Restore" Target="HEARTBEAT_SUCCESSES_BEFORE_RESTORE" Default="2" Mode="" Description="Successes before restoring primary" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Internet Checks" Target="HEARTBEAT_INTERNET_CHECKS" Default="1.1.1.1:443,8.8.8.8:443,9.9.9.9:443" Mode="" Description="Comma-separated host:port list" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat DNS Check Domains" Target="HEARTBEAT_DNS_CHECK_DOMAINS" Default="cloudflare.com,dns.google,quad9.net" Mode="" Description="Comma-separated domains" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat HTTP Check URLs" Target="HEARTBEAT_HTTP_CHECK_URLS" Default="https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/" Mode="" Description="Comma-separated URLs" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
+  <Config Name="DNS4ME Max Servers Per Domain" Target="DNS4ME_MAX_SERVERS_PER_DOMAIN" Default="1" Mode="" Description="Debug option" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="DNS4ME Include Check Domain" Target="DNS4ME_INCLUDE_CHECK_DOMAIN" Default="true" Mode="" Description="Debug option" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>
