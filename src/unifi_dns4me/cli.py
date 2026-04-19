@@ -17,7 +17,7 @@ from .dns4me import (
     group_by_domain,
     parse_dnsmasq_forward_rules,
 )
-from .state import load_managed_rules, save_managed_rules
+from .state import ManagedState, load_state, save_state
 from .unifi import DnsPolicy, UnifiApiError, UnifiClient, build_forward_domain_body
 
 
@@ -33,8 +33,14 @@ class Config:
     state_path: str
     check_after_sync: bool
     include_check_domain: bool
-    fallback_on_check_fail: bool
-    fallback_server_index: int
+    heartbeat_internet_checks: tuple[tuple[str, int], ...]
+    heartbeat_dns_check_domains: tuple[str, ...]
+    heartbeat_http_check_urls: tuple[str, ...]
+    heartbeat_enabled: bool
+    heartbeat_interval_seconds: int
+    heartbeat_failures_before_fallback: int
+    heartbeat_restore_primary: bool
+    heartbeat_successes_before_restore: int
 
 
 @dataclass(frozen=True)
@@ -263,8 +269,15 @@ def _doctor(config: Config) -> int:
     print(f"State path: {config.state_path}")
     print(f"Check after sync: {config.check_after_sync}")
     print(f"Include dns4me.net forwarder: {config.include_check_domain}")
-    print(f"Fallback on check fail: {config.fallback_on_check_fail}")
-    print(f"Fallback DNS4ME server index: {config.fallback_server_index}")
+    internet_checks = ", ".join(f"{host}:{port}" for host, port in config.heartbeat_internet_checks)
+    print(f"Heartbeat internet checks: {internet_checks}")
+    print(f"Heartbeat DNS check domains: {', '.join(config.heartbeat_dns_check_domains)}")
+    print(f"Heartbeat HTTP check URLs: {', '.join(config.heartbeat_http_check_urls)}")
+    print(f"Heartbeat enabled: {config.heartbeat_enabled}")
+    print(f"Heartbeat interval seconds: {config.heartbeat_interval_seconds}")
+    print(f"Heartbeat failures before fallback: {config.heartbeat_failures_before_fallback}")
+    print(f"Heartbeat restore primary: {config.heartbeat_restore_primary}")
+    print(f"Heartbeat successes before restore: {config.heartbeat_successes_before_restore}")
 
     if config.unifi_api_key != config.unifi_api_key.strip():
         print("Warning: UNIFI_API_KEY has leading or trailing whitespace.")
@@ -331,7 +344,14 @@ def _populate_state(config: Config, rules: list[ForwardRule], *, dry_run: bool, 
         print("Dry run complete. No state file was written.")
         return 0
 
-    save_managed_rules(config.state_path, managed_rules)
+    save_state(
+        config.state_path,
+        ManagedState(
+            active_server_index=server_index,
+            managed_rules=managed_rules,
+            dns4me_servers=_dns4me_servers_from_rules(rules),
+        ),
+    )
     print(f"State saved: {config.state_path}")
     return 0
 
@@ -344,16 +364,16 @@ def _sync(
     delete_stale: bool,
     check_after_sync: bool = False,
     server_index: int = 1,
-    allow_fallback: bool = True,
 ) -> int:
     client = _client_for_config(config)
+    state = load_state(config.state_path)
 
     plan = _plan_sync(
         existing=client.list_dns_policies(),
         rules=rules,
         managed_description=config.managed_description,
         max_servers_per_domain=config.max_servers_per_domain,
-        previously_managed=load_managed_rules(config.state_path),
+        previously_managed=state.managed_rules,
         include_check_domain=config.include_check_domain,
         server_index=server_index,
     )
@@ -399,32 +419,18 @@ def _sync(
         managed_rules = {rule for rule in plan.unchanged}
         managed_rules.update(update.rule for update in plan.updates)
         managed_rules.update(plan.creates)
-        save_managed_rules(config.state_path, managed_rules)
+        save_state(
+            config.state_path,
+            ManagedState(
+                active_server_index=server_index,
+                managed_rules=managed_rules,
+                dns4me_servers=_dns4me_servers_from_rules(rules),
+            ),
+        )
         print(f"State saved: {config.state_path}")
 
     if check_after_sync:
-        check_result = _check()
-        if (
-            check_result != 0
-            and allow_fallback
-            and config.fallback_on_check_fail
-            and config.fallback_server_index != server_index
-        ):
-            print(
-                f"DNS4ME check failed. Switching managed forwarders to DNS4ME server index "
-                f"{config.fallback_server_index}.",
-                file=sys.stderr,
-            )
-            return _sync(
-                config,
-                rules,
-                dry_run=dry_run,
-                delete_stale=delete_stale,
-                check_after_sync=True,
-                server_index=config.fallback_server_index,
-                allow_fallback=False,
-            )
-        return check_result
+        return _check()
 
     return 0
 
@@ -552,6 +558,10 @@ def _recover_managed_rules(
     return wanted_rules & existing_rules
 
 
+def _dns4me_servers_from_rules(rules: list[ForwardRule]) -> tuple[str, ...]:
+    return tuple(sorted({rule.server for rule in rules}))
+
+
 def _select_wanted_rules(
     rules: list[ForwardRule],
     *,
@@ -631,8 +641,27 @@ def _load_config() -> Config:
         state_path=os.getenv("STATE_PATH", ".unifi-dns4me-state.json"),
         check_after_sync=_env_bool("CHECK_AFTER_SYNC", default=False),
         include_check_domain=_env_bool("DNS4ME_INCLUDE_CHECK_DOMAIN", default=True),
-        fallback_on_check_fail=_env_bool("DNS4ME_FALLBACK_ON_CHECK_FAIL", default=False),
-        fallback_server_index=_env_int("DNS4ME_FALLBACK_SERVER_INDEX", default=2),
+        heartbeat_internet_checks=_env_internet_checks(),
+        heartbeat_dns_check_domains=tuple(
+            _env_csv(
+                "HEARTBEAT_DNS_CHECK_DOMAINS",
+                default=_legacy_or_default("HEARTBEAT_DNS_CHECK_DOMAIN", "cloudflare.com,dns.google,quad9.net"),
+            )
+        ),
+        heartbeat_http_check_urls=tuple(
+            _env_csv(
+                "HEARTBEAT_HTTP_CHECK_URLS",
+                default=_legacy_or_default(
+                    "HEARTBEAT_HTTP_CHECK_URL",
+                    "https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/",
+                ),
+            )
+        ),
+        heartbeat_enabled=_env_bool("HEARTBEAT_ENABLED", default=True),
+        heartbeat_interval_seconds=_env_positive_int("HEARTBEAT_INTERVAL_SECONDS", default=300),
+        heartbeat_failures_before_fallback=_env_positive_int("HEARTBEAT_FAILURES_BEFORE_FALLBACK", default=2),
+        heartbeat_restore_primary=_env_bool("HEARTBEAT_RESTORE_PRIMARY", default=True),
+        heartbeat_successes_before_restore=_env_positive_int("HEARTBEAT_SUCCESSES_BEFORE_RESTORE", default=2),
     )
 
 
@@ -651,6 +680,57 @@ def _env_int(name: str, *, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be an integer.") from exc
+
+
+def _env_positive_int(name: str, *, default: int) -> int:
+    value = _env_int(name, default=default)
+    if value < 1:
+        raise RuntimeError(f"{name} must be 1 or greater.")
+    return value
+
+
+def _env_csv(name: str, *, default: str) -> list[str]:
+    return _parse_csv(os.getenv(name, default), name=name)
+
+
+def _parse_csv(value: str, *, name: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise RuntimeError(f"{name} must contain at least one value.")
+    return items
+
+
+def _env_internet_checks() -> tuple[tuple[str, int], ...]:
+    value = os.getenv("HEARTBEAT_INTERNET_CHECKS")
+    if value is None and (
+        "HEARTBEAT_INTERNET_CHECK_HOST" in os.environ or "HEARTBEAT_INTERNET_CHECK_PORT" in os.environ
+    ):
+        host = os.getenv("HEARTBEAT_INTERNET_CHECK_HOST", "1.1.1.1")
+        port = os.getenv("HEARTBEAT_INTERNET_CHECK_PORT", "443")
+        value = f"{host}:{port}"
+    return tuple(_parse_internet_checks(value or "1.1.1.1:443,8.8.8.8:443,9.9.9.9:443"))
+
+
+def _legacy_or_default(legacy_name: str, default: str) -> str:
+    return os.getenv(legacy_name, default)
+
+
+def _parse_internet_checks(value: str) -> list[tuple[str, int]]:
+    checks = []
+    for item in _parse_csv(value, name="HEARTBEAT_INTERNET_CHECKS"):
+        try:
+            host, port_text = item.rsplit(":", 1)
+            port = int(port_text)
+        except ValueError as exc:
+            raise RuntimeError(
+                "HEARTBEAT_INTERNET_CHECKS values must be host:port pairs, for example 1.1.1.1:443."
+            ) from exc
+        if not host.strip():
+            raise RuntimeError("HEARTBEAT_INTERNET_CHECKS host values must not be empty.")
+        if port < 1 or port > 65535:
+            raise RuntimeError("HEARTBEAT_INTERNET_CHECKS ports must be between 1 and 65535.")
+        checks.append((host.strip(), port))
+    return checks
 
 
 def _redact_secret(value: str) -> str:
