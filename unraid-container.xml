@@ -46,6 +46,8 @@
   <Config Name="Heartbeat Internet Checks" Target="HEARTBEAT_INTERNET_CHECKS" Default="1.1.1.1:443,8.8.8.8:443,9.9.9.9:443" Mode="" Description="Comma-separated host:port list" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat DNS Check Domains" Target="HEARTBEAT_DNS_CHECK_DOMAINS" Default="cloudflare.com,dns.google,quad9.net" Mode="" Description="Comma-separated domains" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat HTTP Check URLs" Target="HEARTBEAT_HTTP_CHECK_URLS" Default="https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/" Mode="" Description="Comma-separated URLs" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Log Success" Target="HEARTBEAT_LOG_SUCCESS" Default="false" Mode="" Description="Log successful heartbeat summaries" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Log Details" Target="HEARTBEAT_LOG_DETAILS" Default="false" Mode="" Description="Log each heartbeat prerequisite check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="Notification URLs" Target="NOTIFY_URLS" Default="" Mode="" Description="Optional comma-separated Apprise URLs" Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="Notify on Sync Error" Target="NOTIFY_ON_SYNC_ERROR" Default="true" Mode="" Description="Notify when scheduled sync fails or post-sync checks fail" Type="Variable" Display="advanced" Required="false" Mask="false"/>

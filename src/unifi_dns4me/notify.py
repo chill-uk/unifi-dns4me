@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TextIO
 
 
@@ -44,11 +45,14 @@ class Notifier:
             else:
                 ok = app.notify(title=title, body=body, notify_type=notify_type)
         except Exception as exc:  # pragma: no cover - defensive boundary around third-party transports.
-            print(f"Notification failed: {exc}", file=self.stream, flush=True)
+            self._log(f"Notification failed for {self._event_label(event, title)}: {exc}")
             return False
 
         if not ok:
-            print("Notification failed: Apprise could not deliver to any configured URL.", file=self.stream, flush=True)
+            self._log(
+                f"Notification failed for {self._event_label(event, title)}: "
+                "Apprise could not deliver to any configured URL."
+            )
         return bool(ok)
 
     def _client(self):
@@ -59,11 +63,9 @@ class Notifier:
             import apprise
         except ImportError:
             if not self._missing_logged:
-                print(
+                self._log(
                     "Notifications disabled: apprise is not installed. "
-                    "Rebuild/reinstall the package to enable NOTIFY_URLS.",
-                    file=self.stream,
-                    flush=True,
+                    "Rebuild/reinstall the package to enable NOTIFY_URLS."
                 )
                 self._missing_logged = True
             return None
@@ -96,3 +98,11 @@ class Notifier:
             "check_fail": self.config.on_check_fail,
             "check_recovery": self.config.on_check_recovery,
         }.get(event, True)
+
+    def _event_label(self, event: str | None, title: str) -> str:
+        if event:
+            return f"{event!r} ({title})"
+        return title
+
+    def _log(self, message: str) -> None:
+        print(f"{datetime.now().isoformat(timespec='seconds')} {message}", file=self.stream, flush=True)

@@ -147,24 +147,42 @@ Check logs:
 docker compose logs -f
 ```
 
-With heartbeat enabled, the daemon logs each heartbeat run between daily syncs:
+Operational logs are timestamped using the container's local timezone:
 
 ```text
-Heartbeat started at 2026-04-19T14:10:58. Current DNS4ME resolver: 3.10.65.124 (resolver 1 of 2).
-Heartbeat internet check passed: 1.1.1.1:443
-Heartbeat DNS check passed: cloudflare.com
-Heartbeat HTTP check passed: https://cloudflare.com/cdn-cgi/trace HTTP 200
-Heartbeat DNS4ME check passed
-Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: 3.10.65.124 (resolver 1 of 2).
+2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 3.10.65.124 (resolver 1 of 2).
+```
+
+With heartbeat enabled, failures and resolver switches are logged by default. To also log successful heartbeat checks, set:
+
+```bash
+HEARTBEAT_LOG_SUCCESS=true
+```
+
+To include the individual prerequisite check lines, set:
+
+```bash
+HEARTBEAT_LOG_DETAILS=true
+```
+
+With both enabled, healthy heartbeat logs look like:
+
+```text
+2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 3.10.65.124 (resolver 1 of 2).
+2026-04-20T10:14:17 Heartbeat internet check passed: 1.1.1.1:443
+2026-04-20T10:14:17 Heartbeat DNS check passed: cloudflare.com
+2026-04-20T10:14:17 Heartbeat HTTP check passed: https://cloudflare.com/cdn-cgi/trace HTTP 200
+2026-04-20T10:14:17 Heartbeat DNS4ME check passed
+2026-04-20T10:14:17 Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: 3.10.65.124 (resolver 1 of 2).
 ```
 
 If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures and skips resolver switch decisions for that heartbeat.
 Before switching all managed forwarders, heartbeat first updates only the `dns4me.net` check forwarder to the alternate resolver, runs the real DNS4ME check through UniFi, and skips the wider UniFi write if that check does not pass.
 
 ```text
-Heartbeat preflight for alternate DNS4ME resolver: 3.10.65.125 (resolver 2 of 2) using UniFi check-domain forwarding.
-updated check forwarder: dns4me.net -> 3.10.65.125
-Heartbeat preflight result: UniFi check-domain forwarding passed.
+2026-04-20T10:19:19 Heartbeat preflight for alternate DNS4ME resolver: 3.10.65.125 (resolver 2 of 2) using UniFi check-domain forwarding.
+2026-04-20T10:19:19 updated check forwarder: dns4me.net -> 3.10.65.125
+2026-04-20T10:19:29 Heartbeat preflight result: UniFi check-domain forwarding passed.
 ```
 
 ### Notifications
@@ -184,6 +202,12 @@ NOTIFY_URLS=tgram://bot_token/chat_id,discord://webhook_id/webhook_token
 ```
 
 The daemon only sends high-value notifications by default: scheduled sync changes, scheduled sync errors, DNS4ME failure threshold reached, resolver switch success, resolver switch failure, and recovery after failed heartbeat checks. Notification delivery errors are logged but do not stop sync or heartbeat.
+
+Test the configured notification URL from inside the container:
+
+```bash
+docker compose run --rm unifi-dns4me notify-test
+```
 
 ### Testing / manual runs
 
@@ -241,6 +265,8 @@ docker compose run --rm unifi-dns4me populate-state --server-index 2
 | `HEARTBEAT_INTERNET_CHECKS` | no | Comma-separated `host:port` TCP checks used to confirm internet reachability. Defaults to `1.1.1.1:443,8.8.8.8:443,9.9.9.9:443`. |
 | `HEARTBEAT_DNS_CHECK_DOMAINS` | no | Comma-separated domains used for the heartbeat general DNS check. Defaults to `cloudflare.com,dns.google,quad9.net`. |
 | `HEARTBEAT_HTTP_CHECK_URLS` | no | Comma-separated URLs used for the heartbeat general HTTP check. Defaults to `https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/`. |
+| `HEARTBEAT_LOG_SUCCESS` | no | Log successful heartbeat summaries. Defaults to `false`; failures and resolver switches are always logged. |
+| `HEARTBEAT_LOG_DETAILS` | no | Log each heartbeat prerequisite check. Defaults to `false`; failed check details are still logged. |
 | `NOTIFY_URLS` | no | Optional comma-separated Apprise URLs. Leave empty to disable notifications. |
 | `NOTIFY_ON_SYNC_ERROR` | no | Notify when scheduled sync fails or post-sync checks fail. Defaults to `true`. |
 | `NOTIFY_ON_SYNC_CHANGES` | no | Notify when sync creates, updates, or deletes UniFi DNS policies. Defaults to `true`. |
