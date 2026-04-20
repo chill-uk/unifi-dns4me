@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "unifi-dns4me contributors" }]
+dependencies = [
+  "apprise>=1.9",
+]
 
 [project.scripts]
 unifi-dns4me = "unifi_dns4me.cli:main"
@@ -16,4 +19,3 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

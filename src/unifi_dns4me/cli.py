@@ -21,6 +21,7 @@ from .dns4me import (
     group_by_domain,
     parse_dnsmasq_forward_rules,
 )
+from .notify import NotificationConfig, Notifier
 from .state import ManagedState, load_state, save_state
 from .unifi import DnsPolicy, UnifiApiError, UnifiClient, build_forward_domain_body
 
@@ -48,6 +49,7 @@ class Config:
     heartbeat_interval_seconds: int
     heartbeat_failures_before_switch: int
     heartbeat_switch_retry_seconds: int
+    notification_config: NotificationConfig
 
 
 @dataclass(frozen=True)
@@ -190,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 delete_stale=args.delete_stale,
                 check_after_sync=args.check_after_sync,
+                notifier=Notifier(config.notification_config),
             )
     except (RuntimeError, UnifiApiError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -209,6 +212,7 @@ def _daemon(
 ) -> int:
     scheduled_time = _parse_daily_time(at)
     heartbeat = HeartbeatRuntime()
+    notifier = Notifier(config.notification_config)
     print(
         f"Scheduler started. Daily sync time: {at}. Dry run: {dry_run}. "
         f"DNS4ME check after sync: {check_after_sync}.",
@@ -223,9 +227,20 @@ def _daemon(
         )
     else:
         print("Heartbeat disabled.", flush=True)
+    if notifier.enabled:
+        print(
+            f"Notifications enabled. URLs: {len(config.notification_config.urls)}.",
+            flush=True,
+        )
 
     if run_on_start:
-        _run_scheduled_sync(config, dry_run=dry_run, delete_stale=delete_stale, check_after_sync=check_after_sync)
+        _run_scheduled_sync(
+            config,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            check_after_sync=check_after_sync,
+            notifier=notifier,
+        )
 
     while True:
         next_run = _next_daily_run(datetime.now(), scheduled_time)
@@ -236,24 +251,59 @@ def _daemon(
             heartbeat=heartbeat,
             dry_run=dry_run,
             delete_stale=delete_stale,
+            notifier=notifier,
         )
-        _run_scheduled_sync(config, dry_run=dry_run, delete_stale=delete_stale, check_after_sync=check_after_sync)
+        _run_scheduled_sync(
+            config,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            check_after_sync=check_after_sync,
+            notifier=notifier,
+        )
 
 
-def _run_scheduled_sync(config: Config, *, dry_run: bool, delete_stale: bool, check_after_sync: bool) -> None:
+def _run_scheduled_sync(
+    config: Config,
+    *,
+    dry_run: bool,
+    delete_stale: bool,
+    check_after_sync: bool,
+    notifier: Notifier | None = None,
+) -> None:
     print(f"Starting scheduled sync at {datetime.now().isoformat(timespec='seconds')}", flush=True)
     try:
         rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
         if not rules:
             print("No DNS4ME forward rules were found. Skipping this run.", file=sys.stderr, flush=True)
             return
-        result = _sync(config, rules, dry_run=dry_run, delete_stale=delete_stale, check_after_sync=check_after_sync)
+        result = _sync(
+            config,
+            rules,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            check_after_sync=check_after_sync,
+            notifier=notifier,
+        )
         if result == 0:
             print(f"Scheduled sync finished at {datetime.now().isoformat(timespec='seconds')}", flush=True)
         else:
             print(f"Scheduled sync finished with errors at {datetime.now().isoformat(timespec='seconds')}", flush=True)
+            if notifier:
+                notifier.send(
+                    "unifi-dns4me scheduled sync finished with errors",
+                    "The sync ran, but one of the post-sync checks failed. Check the container logs for details.",
+                    level="warning",
+                    event="sync_error",
+                )
     except (RuntimeError, UnifiApiError) as exc:
         print(f"Scheduled sync failed: {exc}", file=sys.stderr, flush=True)
+        if notifier:
+            notifier.send(
+                "unifi-dns4me scheduled sync failed",
+                str(exc),
+                level="error",
+                event="sync_error",
+            )
 
 
 def _wait_until_next_sync(
@@ -263,6 +313,7 @@ def _wait_until_next_sync(
     heartbeat: HeartbeatRuntime,
     dry_run: bool,
     delete_stale: bool,
+    notifier: Notifier | None = None,
 ) -> None:
     while True:
         remaining = int((next_run - datetime.now()).total_seconds())
@@ -275,13 +326,27 @@ def _wait_until_next_sync(
         sleep_seconds = max(1, min(config.heartbeat_interval_seconds, remaining))
         time.sleep(sleep_seconds)
         if datetime.now() < next_run:
-            _run_heartbeat(config, heartbeat=heartbeat, dry_run=dry_run, delete_stale=delete_stale)
+            _run_heartbeat(
+                config,
+                heartbeat=heartbeat,
+                dry_run=dry_run,
+                delete_stale=delete_stale,
+                notifier=notifier,
+            )
 
 
-def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool, delete_stale: bool) -> None:
+def _run_heartbeat(
+    config: Config,
+    *,
+    heartbeat: HeartbeatRuntime,
+    dry_run: bool,
+    delete_stale: bool,
+    notifier: Notifier | None = None,
+) -> None:
     started_at = datetime.now().isoformat(timespec="seconds")
     state = load_state(config.state_path)
-    print(f"Heartbeat started at {started_at}. Active DNS4ME server index: {state.active_server_index}.", flush=True)
+    current_resolver = _resolver_label(state.active_server_index, state.dns4me_servers)
+    print(f"Heartbeat started at {started_at}. Current DNS4ME resolver: {current_resolver}.", flush=True)
 
     outcome = _heartbeat_checks(config)
     for detail in outcome.details:
@@ -293,8 +358,19 @@ def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool
         return
 
     if outcome.dns4me_ok:
+        previous_failures = heartbeat.consecutive_failures
         heartbeat.consecutive_failures = 0
-        print(f"Heartbeat DNS4ME PASS. Active resolver index {state.active_server_index} is healthy.", flush=True)
+        print(f"Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: {current_resolver}.", flush=True)
+        if previous_failures and notifier:
+            notifier.send(
+                "DNS4ME resolver recovered",
+                (
+                    f"Current DNS4ME resolver: {current_resolver}\n"
+                    f"Passed after {previous_failures} failed heartbeat check(s)."
+                ),
+                level="warning",
+                event="check_recovery",
+            )
         return
 
     heartbeat.consecutive_failures += 1
@@ -320,12 +396,25 @@ def _run_heartbeat(config: Config, *, heartbeat: HeartbeatRuntime, dry_run: bool
         print("Heartbeat could not infer an alternate DNS4ME resolver from current state.", file=sys.stderr, flush=True)
         return
 
-    print(f"Heartbeat switching to DNS4ME server index {target_server_index}.", file=sys.stderr, flush=True)
+    target_resolver = _resolver_label(target_server_index, state.dns4me_servers)
+    if notifier:
+        notifier.send(
+            "DNS4ME resolver failure threshold reached",
+            (
+                f"Current DNS4ME resolver: {current_resolver}\n"
+                f"Failed checks: {heartbeat.consecutive_failures}\n"
+                f"Trying alternate DNS4ME resolver: {target_resolver}"
+            ),
+            level="warning",
+            event="check_fail",
+        )
+    print(f"Heartbeat switching to alternate DNS4ME resolver: {target_resolver}.", file=sys.stderr, flush=True)
     if _heartbeat_switch_server(
         config,
         target_server_index=target_server_index,
         dry_run=dry_run,
         delete_stale=delete_stale,
+        notifier=notifier,
     ):
         heartbeat.consecutive_failures = 0
         heartbeat.next_switch_attempt_at = None
@@ -485,18 +574,29 @@ def _heartbeat_switch_server(
     target_server_index: int,
     dry_run: bool,
     delete_stale: bool,
+    notifier: Notifier | None = None,
 ) -> bool:
     try:
         state = load_state(config.state_path)
         rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
         if not rules:
             print("Heartbeat resolver switch skipped because DNS4ME returned no rules.", file=sys.stderr, flush=True)
+            if notifier:
+                notifier.send(
+                    "DNS4ME resolver switch skipped",
+                    "DNS4ME returned no rules, so the active UniFi forwarders were left unchanged.",
+                    level="error",
+                    event="switch_failure",
+                )
             return False
+        dns4me_servers = _dns4me_servers_from_rules(rules)
         target_server = _dns4me_server_for_index(rules, target_server_index)
         active_server = _dns4me_server_for_index(rules, state.active_server_index)
+        target_resolver = _resolver_label(target_server_index, dns4me_servers)
+        active_resolver = _resolver_label(state.active_server_index, dns4me_servers)
         print(
-            f"Heartbeat preflight for DNS4ME server index {target_server_index} "
-            f"({target_server}) using UniFi check-domain forwarding.",
+            f"Heartbeat preflight for alternate DNS4ME resolver: {target_resolver} "
+            f"using UniFi check-domain forwarding.",
             flush=True,
         )
         if not _unifi_check_domain_preflight(
@@ -506,11 +606,22 @@ def _heartbeat_switch_server(
             dry_run=dry_run,
         ):
             print(
-                f"Heartbeat resolver switch skipped because DNS4ME server index "
-                f"{target_server_index} did not pass validation.",
+                f"Heartbeat resolver switch skipped because alternate DNS4ME resolver "
+                f"{target_resolver} did not pass validation.",
                 file=sys.stderr,
                 flush=True,
             )
+            if notifier:
+                notifier.send(
+                    "DNS4ME resolver switch validation failed",
+                    (
+                        f"Current DNS4ME resolver: {active_resolver}\n"
+                        f"Alternate DNS4ME resolver failed validation: {target_resolver}\n"
+                        "Managed forwarders were left unchanged."
+                    ),
+                    level="warning",
+                    event="switch_failure",
+                )
             return False
         result = _sync(
             config,
@@ -522,12 +633,36 @@ def _heartbeat_switch_server(
         )
     except (RuntimeError, UnifiApiError) as exc:
         print(f"Heartbeat resolver switch failed: {exc}", file=sys.stderr, flush=True)
+        if notifier:
+            notifier.send(
+                "DNS4ME resolver switch failed",
+                str(exc),
+                level="error",
+                event="switch_failure",
+            )
         return False
 
     if result == 0:
-        print(f"Heartbeat resolver switch complete. Active DNS4ME server index: {target_server_index}.", flush=True)
+        print(f"Heartbeat resolver switch complete. Current DNS4ME resolver: {target_resolver}.", flush=True)
+        if notifier:
+            notifier.send(
+                "DNS4ME resolver switch complete",
+                (
+                    f"Previous DNS4ME resolver: {active_resolver}\n"
+                    f"Current DNS4ME resolver: {target_resolver}"
+                ),
+                level="warning",
+                event="switch",
+            )
         return True
     print("Heartbeat resolver switch finished with errors.", file=sys.stderr, flush=True)
+    if notifier:
+        notifier.send(
+            "DNS4ME resolver switch finished with errors",
+            "The switch command completed, but returned an error status. Check the container logs for details.",
+            level="error",
+            event="switch_failure",
+        )
     return False
 
 
@@ -594,6 +729,8 @@ def _doctor(config: Config) -> int:
     print(f"Heartbeat interval seconds: {config.heartbeat_interval_seconds}")
     print(f"Heartbeat failures before switch: {config.heartbeat_failures_before_switch}")
     print(f"Heartbeat switch retry seconds: {config.heartbeat_switch_retry_seconds}")
+    print(f"Notifications enabled: {bool(config.notification_config.urls)}")
+    print(f"Notification URLs: {len(config.notification_config.urls)} configured")
 
     if config.unifi_api_key != config.unifi_api_key.strip():
         print("Warning: UNIFI_API_KEY has leading or trailing whitespace.")
@@ -646,7 +783,7 @@ def _populate_state(config: Config, rules: list[ForwardRule], *, dry_run: bool, 
             server_index=server_index,
         )
     )
-    print(f"DNS4ME wanted rules for server index {server_index}: {wanted_count}")
+    print(f"DNS4ME wanted rules for {_resolver_label(server_index, _dns4me_servers_from_rules(rules))}: {wanted_count}")
     print(f"Matching UniFi Forward Domain policies found: {len(managed_rules)}")
 
     if not managed_rules:
@@ -680,6 +817,7 @@ def _sync(
     delete_stale: bool,
     check_after_sync: bool = False,
     server_index: int = 1,
+    notifier: Notifier | None = None,
 ) -> int:
     client = _client_for_config(config)
     state = load_state(config.state_path)
@@ -695,8 +833,10 @@ def _sync(
     )
 
     total_wanted = len(plan.unchanged) + len(plan.updates) + len(plan.creates)
+    dns4me_servers = _dns4me_servers_from_rules(rules)
+    current_resolver = _resolver_label(server_index, dns4me_servers)
     print(f"DNS4ME wants {total_wanted} UniFi Forward Domain policies.")
-    print(f"DNS4ME server index: {server_index}")
+    print(f"Current DNS4ME resolver: {current_resolver}")
     print(f"Unchanged: {len(plan.unchanged)}")
     print(f"Updates needed: {len(plan.updates)}")
     print(f"Creates needed: {len(plan.creates)}")
@@ -743,10 +883,22 @@ def _sync(
             ManagedState(
                 active_server_index=server_index,
                 managed_rules=managed_rules,
-                dns4me_servers=_dns4me_servers_from_rules(rules),
+                dns4me_servers=dns4me_servers,
             ),
         )
         print(f"State saved: {config.state_path}")
+        if writes_needed > 0 and notifier:
+            notifier.send(
+                "unifi-dns4me sync changed UniFi DNS policies",
+                (
+                    f"Current DNS4ME resolver: {current_resolver}\n"
+                    f"Created: {len(plan.creates)}\n"
+                    f"Updated: {len(plan.updates)}\n"
+                    f"Deleted stale: {len(plan.stale) if delete_stale else 0}"
+                ),
+                level="warning",
+                event="sync_changes",
+            )
 
     if check_after_sync:
         if not dry_run and writes_needed > 0 and config.check_after_sync_delay_seconds > 0:
@@ -888,6 +1040,14 @@ def _dns4me_servers_from_rules(rules: list[ForwardRule]) -> tuple[str, ...]:
     return tuple(sorted({rule.server for rule in rules}))
 
 
+def _resolver_label(server_index: int, servers: tuple[str, ...]) -> str:
+    if server_index >= 1 and server_index <= len(servers):
+        return f"{servers[server_index - 1]} (resolver {server_index} of {len(servers)})"
+    if servers:
+        return f"resolver {server_index} of {len(servers)}"
+    return f"resolver {server_index}"
+
+
 def _dns4me_server_for_index(rules: list[ForwardRule], server_index: int) -> str:
     servers = _dns4me_servers_from_rules(rules)
     if server_index < 1:
@@ -1001,6 +1161,15 @@ def _load_config() -> Config:
             default=2,
         ),
         heartbeat_switch_retry_seconds=_env_positive_int("HEARTBEAT_SWITCH_RETRY_SECONDS", default=600),
+        notification_config=NotificationConfig(
+            urls=tuple(_env_optional_csv("NOTIFY_URLS")),
+            on_sync_error=_env_bool("NOTIFY_ON_SYNC_ERROR", default=True),
+            on_sync_changes=_env_bool("NOTIFY_ON_SYNC_CHANGES", default=True),
+            on_switch=_env_bool("NOTIFY_ON_SWITCH", default=True),
+            on_switch_failure=_env_bool("NOTIFY_ON_SWITCH_FAILURE", default=True),
+            on_check_fail=_env_bool("NOTIFY_ON_CHECK_FAIL", default=True),
+            on_check_recovery=_env_bool("NOTIFY_ON_CHECK_RECOVERY", default=True),
+        ),
     )
 
 
@@ -1043,6 +1212,11 @@ def _env_positive_int_alias(name: str, *, legacy_name: str, default: int) -> int
 
 def _env_csv(name: str, *, default: str) -> list[str]:
     return _parse_csv(os.getenv(name, default), name=name)
+
+
+def _env_optional_csv(name: str) -> list[str]:
+    value = os.getenv(name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _parse_csv(value: str, *, name: str) -> list[str]:

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from unifi_dns4me.cli import (
     _env_internet_checks,
     _env_nonnegative_int,
+    _env_optional_csv,
     _env_positive_int,
     _env_positive_int_alias,
     _parse_csv,
@@ -17,6 +18,10 @@ class HeartbeatConfigTest(unittest.TestCase):
             _parse_csv("cloudflare.com, dns.google,,quad9.net", name="TEST"),
             ["cloudflare.com", "dns.google", "quad9.net"],
         )
+
+    def test_optional_csv_allows_empty_values(self) -> None:
+        with patch.dict("os.environ", {"NOTIFY_URLS": ""}, clear=True):
+            self.assertEqual(_env_optional_csv("NOTIFY_URLS"), [])
 
     def test_parse_internet_checks(self) -> None:
         self.assertEqual(

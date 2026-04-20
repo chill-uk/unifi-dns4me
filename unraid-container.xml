@@ -47,6 +47,14 @@
   <Config Name="Heartbeat DNS Check Domains" Target="HEARTBEAT_DNS_CHECK_DOMAINS" Default="cloudflare.com,dns.google,quad9.net" Mode="" Description="Comma-separated domains" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat HTTP Check URLs" Target="HEARTBEAT_HTTP_CHECK_URLS" Default="https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/" Mode="" Description="Comma-separated URLs" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
+  <Config Name="Notification URLs" Target="NOTIFY_URLS" Default="" Mode="" Description="Optional comma-separated Apprise URLs" Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Notify on Sync Error" Target="NOTIFY_ON_SYNC_ERROR" Default="true" Mode="" Description="Notify when scheduled sync fails or post-sync checks fail" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Notify on Sync Changes" Target="NOTIFY_ON_SYNC_CHANGES" Default="true" Mode="" Description="Notify when sync creates, updates, or deletes UniFi DNS policies" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Notify on Switch" Target="NOTIFY_ON_SWITCH" Default="true" Mode="" Description="Notify when heartbeat switches DNS4ME resolver" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Notify on Switch Failure" Target="NOTIFY_ON_SWITCH_FAILURE" Default="true" Mode="" Description="Notify when heartbeat cannot switch DNS4ME resolver" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Notify on Check Fail" Target="NOTIFY_ON_CHECK_FAIL" Default="true" Mode="" Description="Notify when heartbeat reaches the DNS4ME failure threshold" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Notify on Check Recovery" Target="NOTIFY_ON_CHECK_RECOVERY" Default="true" Mode="" Description="Notify when the active resolver recovers after failed heartbeat checks" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
   <Config Name="DNS4ME Max Servers Per Domain" Target="DNS4ME_MAX_SERVERS_PER_DOMAIN" Default="1" Mode="" Description="Debug option" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="DNS4ME Include Check Domain" Target="DNS4ME_INCLUDE_CHECK_DOMAIN" Default="true" Mode="" Description="Debug option" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 </Container>

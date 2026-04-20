@@ -10,6 +10,7 @@ from unifi_dns4me.cli import (
     _dns4me_server_for_index,
     _next_daily_run,
     _parse_daily_time,
+    _resolver_label,
     _set_check_domain_forwarder,
 )
 from unifi_dns4me.dns4me import ForwardRule
@@ -79,6 +80,12 @@ class DaemonScheduleTest(unittest.TestCase):
     def test_dns4me_server_for_index_rejects_missing_target(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
             _dns4me_server_for_index([ForwardRule("example.com", "3.10.65.124")], 2)
+
+    def test_resolver_label_includes_ip_and_slot_count(self) -> None:
+        self.assertEqual(
+            _resolver_label(1, ("3.10.65.124", "52.29.2.17")),
+            "3.10.65.124 (resolver 1 of 2)",
+        )
 
     def test_set_check_domain_forwarder_updates_existing_policy(self) -> None:
         client = RecordingDnsPolicyClient(
