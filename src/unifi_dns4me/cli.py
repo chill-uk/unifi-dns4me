@@ -351,8 +351,18 @@ def _run_heartbeat(
     delete_stale: bool,
     notifier: Notifier | None = None,
 ) -> None:
-    state = load_state(config.state_path)
-    current_resolver = _resolver_label(state.active_server_index, state.dns4me_servers)
+    rules: list[ForwardRule] = []
+    current_server_index = 1
+    dns4me_servers: tuple[str, ...] = ()
+    try:
+        rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
+        dns4me_servers = _dns4me_servers_from_rules(rules)
+        if rules:
+            current_server_index = _active_server_index_from_unifi(config, rules)
+    except (RuntimeError, UnifiApiError) as exc:
+        _log(f"Heartbeat could not determine current DNS4ME resolver from UniFi: {exc}", error=True)
+
+    current_resolver = _resolver_label(current_server_index, dns4me_servers)
     outcome = _heartbeat_checks(config)
     previous_failures = heartbeat.consecutive_failures
     should_log = (
@@ -407,12 +417,16 @@ def _run_heartbeat(
         )
         return
 
-    target_server_index = _alternate_server_index(current_server_index=state.active_server_index)
-    if target_server_index == state.active_server_index:
+    if not rules:
+        _log("Heartbeat cannot switch DNS4ME resolver because DNS4ME returned no rules.", error=True)
+        return
+
+    target_server_index = _alternate_server_index(current_server_index=current_server_index)
+    if target_server_index == current_server_index or target_server_index > len(dns4me_servers):
         _log("Heartbeat could not infer an alternate DNS4ME resolver from current state.", error=True)
         return
 
-    target_resolver = _resolver_label(target_server_index, state.dns4me_servers)
+    target_resolver = _resolver_label(target_server_index, dns4me_servers)
     if notifier:
         notifier.send(
             "DNS4ME resolver failure threshold reached",
@@ -427,6 +441,8 @@ def _run_heartbeat(
     _log(f"Heartbeat switching to alternate DNS4ME resolver: {target_resolver}.", error=True)
     if _heartbeat_switch_server(
         config,
+        rules=rules,
+        current_server_index=current_server_index,
         target_server_index=target_server_index,
         dry_run=dry_run,
         delete_stale=delete_stale,
@@ -615,14 +631,14 @@ def _alternate_server_index(*, current_server_index: int) -> int:
 def _heartbeat_switch_server(
     config: Config,
     *,
+    rules: list[ForwardRule],
+    current_server_index: int,
     target_server_index: int,
     dry_run: bool,
     delete_stale: bool,
     notifier: Notifier | None = None,
 ) -> bool:
     try:
-        state = load_state(config.state_path)
-        rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
         if not rules:
             _log("Heartbeat resolver switch skipped because DNS4ME returned no rules.", error=True)
             if notifier:
@@ -635,9 +651,9 @@ def _heartbeat_switch_server(
             return False
         dns4me_servers = _dns4me_servers_from_rules(rules)
         target_server = _dns4me_server_for_index(rules, target_server_index)
-        active_server = _dns4me_server_for_index(rules, state.active_server_index)
+        active_server = _dns4me_server_for_index(rules, current_server_index)
         target_resolver = _resolver_label(target_server_index, dns4me_servers)
-        active_resolver = _resolver_label(state.active_server_index, dns4me_servers)
+        active_resolver = _resolver_label(current_server_index, dns4me_servers)
         _log(
             f"Heartbeat preflight for alternate DNS4ME resolver: {target_resolver} "
             f"using UniFi check-domain forwarding."
@@ -872,11 +888,7 @@ def _populate_state(config: Config, rules: list[ForwardRule], *, dry_run: bool, 
 
     save_state(
         config.state_path,
-        ManagedState(
-            active_server_index=server_index,
-            managed_rules=managed_rules,
-            dns4me_servers=_dns4me_servers_from_rules(rules),
-        ),
+        ManagedState(managed_rules=managed_rules),
     )
     print(f"State saved: {config.state_path}")
     return 0
@@ -889,11 +901,13 @@ def _sync(
     dry_run: bool,
     delete_stale: bool,
     check_after_sync: bool = False,
-    server_index: int = 1,
+    server_index: int | None = None,
     notifier: Notifier | None = None,
 ) -> int:
     client = _client_for_config(config)
     state = load_state(config.state_path)
+    if server_index is None:
+        server_index = _active_server_index_from_unifi_client(client, rules)
     wanted_rules = _select_wanted_rules(
         rules,
         max_servers_per_domain=config.max_servers_per_domain,
@@ -994,11 +1008,7 @@ def _sync(
     else:
         save_state(
             config.state_path,
-            ManagedState(
-                active_server_index=server_index,
-                managed_rules=set(wanted_rules),
-                dns4me_servers=dns4me_servers,
-            ),
+            ManagedState(managed_rules=set(wanted_rules)),
         )
         _log(f"State saved: {config.state_path}")
         if writes_needed > 0 and notifier:
@@ -1115,8 +1125,26 @@ def _find_dns_policy_for_update(client: UnifiClient, policy: DnsPolicy, rule: Fo
     return None
 
 
+def _active_server_index_from_unifi(config: Config, rules: list[ForwardRule]) -> int:
+    return _active_server_index_from_unifi_client(_client_for_config(config), rules)
+
+
+def _active_server_index_from_unifi_client(client: UnifiClient, rules: list[ForwardRule]) -> int:
+    servers = _dns4me_servers_from_rules(rules)
+    if not servers:
+        return 1
+
+    policies = _find_dns_policies_for_domain(client, "dns4me.net")
+    for policy in policies:
+        if policy.value in servers:
+            return servers.index(policy.value) + 1
+
+    return 1
+
+
 def _find_dns_policies_for_domain(client: UnifiClient, domain: str) -> list[DnsPolicy]:
-    policy_filter = f"domain.eq('{domain.replace("'", "\\'")}')"
+    escaped_domain = domain.replace("'", "\\'")
+    policy_filter = f"domain.eq('{escaped_domain}')"
     try:
         candidates = client.list_dns_policies(policy_filter=policy_filter)
     except UnifiApiError as exc:

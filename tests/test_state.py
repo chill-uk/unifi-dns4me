@@ -25,28 +25,19 @@ class StateTest(unittest.TestCase):
 
             self.assertEqual(load_managed_rules(path), rules)
 
-    def test_save_and_load_full_state(self) -> None:
+    def test_save_and_load_state_tracks_managed_rules_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "state.json")
             rules = {ForwardRule("bbc.co.uk", "1.2.3.4")}
 
             save_state(
                 path,
-                ManagedState(
-                    active_server_index=2,
-                    managed_rules=rules,
-                    dns4me_servers=("1.2.3.4", "5.6.7.8"),
-                ),
+                ManagedState(managed_rules=rules),
             )
 
-            self.assertEqual(
-                load_state(path),
-                ManagedState(
-                    active_server_index=2,
-                    managed_rules=rules,
-                    dns4me_servers=("1.2.3.4", "5.6.7.8"),
-                ),
-            )
+            self.assertEqual(load_state(path), ManagedState(managed_rules=rules))
+            self.assertNotIn("active_server_index", Path(path).read_text(encoding="utf-8"))
+            self.assertNotIn("dns4me_servers", Path(path).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

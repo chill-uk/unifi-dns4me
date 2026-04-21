@@ -306,11 +306,6 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 ```json
 {
   "version": 1,
-  "active_server_index": 1,
-  "dns4me_servers": [
-    "3.10.65.124",
-    "3.10.65.125"
-  ],
   "managed_rules": [
     {
       "domain": "bbc.co.uk",
@@ -330,9 +325,9 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - If multiple Forward Domain policies exist for the same domain, it deletes only the entries that do not point to the current DNS4ME resolver. If none of the duplicates point to the current resolver, it creates one clean replacement.
 - Normal single-policy updates are `PUT` only. Duplicate cleanup may delete incorrect duplicate policies.
 - The tool includes `dns4me.net` by default because DNS4ME's check endpoint depends on that domain resolving through DNS4ME.
+- The `dns4me.net` Forward Domain policy is also the source of truth for the active DNS4ME resolver. On first run, if `dns4me.net` already points to one of DNS4ME's resolver IPs, sync uses that resolver instead of forcing resolver `1`.
 - DNS4ME often supplies two resolver IPs per domain. UniFi's Forward Domain UI has one DNS Server field, so the tool defaults to one target per domain. Set `DNS4ME_MAX_SERVERS_PER_DOMAIN=2` only if your UniFi version supports duplicate Forward Domain policies for the same domain.
-- The state file records the DNS4ME rules this tool manages after a successful non-dry-run sync. On later runs, stale deletion can safely remove UniFi forwarders that were previously managed but disappeared from DNS4ME.
-- The state file records the current DNS4ME resolver slot and last-known DNS4ME resolver IPs. That cache is useful when the DNS4ME feed cannot be reached but the tool still needs to know which resolver was active.
+- The state file records only the DNS4ME rules this tool manages after a successful non-dry-run sync. On later runs, stale deletion can safely remove UniFi forwarders that were previously managed but disappeared from DNS4ME.
 - The first successful non-dry-run sync seeds the state file from the current DNS4ME rule set. A dry-run does not write state.
 - If the state file is accidentally deleted, `populate-state` rebuilds it from DNS4ME rules that already exist as UniFi Forward Domain policies. It does not create, update, or delete UniFi policies.
 - The DNS4ME check is only meaningful from a host or container whose DNS lookups use the UniFi gateway/DNS path you are configuring.

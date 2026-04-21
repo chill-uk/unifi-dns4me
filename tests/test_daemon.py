@@ -80,8 +80,8 @@ class DaemonScheduleTest(unittest.TestCase):
             ForwardRule("example.com", "5.6.7.8"),
         ]
 
-        self.assertEqual(_dns4me_server_for_index(rules, 1), "5.6.7.8")
-        self.assertEqual(_dns4me_server_for_index(rules, 2), "1.2.3.4")
+        self.assertEqual(_dns4me_server_for_index(rules, 1), "1.2.3.4")
+        self.assertEqual(_dns4me_server_for_index(rules, 2), "5.6.7.8")
 
     def test_dns4me_server_for_index_rejects_missing_target(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
@@ -150,7 +150,10 @@ class DaemonScheduleTest(unittest.TestCase):
         with redirect_stdout(StringIO()):
             _replace_dns_policy(client, policy, ForwardRule("example.com", "2.2.2.2"))
 
-        self.assertEqual(client.filters, ["domain.eq('example.com')", "domain.eq('example.com')"])
+        self.assertEqual(
+            client.filters,
+            ["domain.eq('example.com')", "domain.eq('example.com')"],
+        )
         self.assertEqual(client.updated, [("fresh-policy", "2.2.2.2"), ("fresh-policy", "2.2.2.2")])
         self.assertEqual(client.deleted, [])
         self.assertEqual(client.created, [])
@@ -171,7 +174,36 @@ class DaemonScheduleTest(unittest.TestCase):
                         delete_stale=True,
                     )
 
-        self.assertEqual(client.filters, ["domain.eq('example.com')", "domain.eq('example.com')"])
+        self.assertEqual(
+            client.filters,
+            ["domain.eq('dns4me.net')", "domain.eq('example.com')", "domain.eq('example.com')"],
+        )
+        self.assertEqual(client.updated, [("policy-1", "2.2.2.2")])
+        self.assertEqual(client.created, [])
+        self.assertEqual(client.deleted, [])
+
+    def test_sync_uses_dns4me_check_forwarder_as_active_resolver(self) -> None:
+        client = RecordingDnsPolicyClient(
+            [
+                DnsPolicy(id="check-policy", type="FORWARD_DOMAIN", name="dns4me.net", value="2.2.2.2", raw={}),
+                DnsPolicy(id="policy-1", type="FORWARD_DOMAIN", name="example.com", value="1.1.1.1", raw={}),
+            ]
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            config = sync_config(f"{temp_dir}/state.json")
+            with patch("unifi_dns4me.cli._client_for_config", return_value=client):
+                with redirect_stdout(StringIO()):
+                    _sync(
+                        config,
+                        [
+                            ForwardRule("example.com", "1.1.1.1"),
+                            ForwardRule("example.com", "2.2.2.2"),
+                        ],
+                        dry_run=False,
+                        delete_stale=True,
+                    )
+
         self.assertEqual(client.updated, [("policy-1", "2.2.2.2")])
         self.assertEqual(client.created, [])
         self.assertEqual(client.deleted, [])
