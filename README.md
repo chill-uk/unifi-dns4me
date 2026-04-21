@@ -150,7 +150,7 @@ docker compose logs -f
 Operational logs are timestamped using the container's local timezone:
 
 ```text
-2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 3.10.65.124 (resolver 1 of 2).
+2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 5.6.7.8 (resolver 1 of 2).
 ```
 
 With heartbeat enabled, failures and resolver switches are logged by default. To also log successful heartbeat checks, set:
@@ -168,20 +168,20 @@ HEARTBEAT_LOG_DETAILS=true
 With both enabled, healthy heartbeat logs look like:
 
 ```text
-2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 3.10.65.124 (resolver 1 of 2).
+2026-04-20T10:14:17 Heartbeat started. Current DNS4ME resolver: 5.6.7.8 (resolver 1 of 2).
 2026-04-20T10:14:17 Heartbeat internet check passed: 1.1.1.1:443
 2026-04-20T10:14:17 Heartbeat DNS check passed: cloudflare.com
 2026-04-20T10:14:17 Heartbeat HTTP check passed: https://cloudflare.com/cdn-cgi/trace HTTP 200
 2026-04-20T10:14:17 Heartbeat DNS4ME check passed
-2026-04-20T10:14:17 Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: 3.10.65.124 (resolver 1 of 2).
+2026-04-20T10:14:17 Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: 5.6.7.8 (resolver 1 of 2).
 ```
 
 If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures and skips resolver switch decisions for that heartbeat.
 Before switching all managed forwarders, heartbeat first updates only the `dns4me.net` check forwarder to the alternate resolver, runs the real DNS4ME check through UniFi, and skips the wider UniFi write if that check does not pass.
 
 ```text
-2026-04-20T10:19:19 Heartbeat preflight for alternate DNS4ME resolver: 3.10.65.125 (resolver 2 of 2) using UniFi check-domain forwarding.
-2026-04-20T10:19:19 updated check forwarder: dns4me.net -> 3.10.65.125
+2026-04-20T10:19:19 Heartbeat preflight for alternate DNS4ME resolver: 1.2.3.4 (resolver 2 of 2) using UniFi check-domain forwarding.
+2026-04-20T10:19:19 updated check forwarder: dns4me.net -> 1.2.3.4
 2026-04-20T10:19:19 Waiting 10s before DNS4ME preflight check (attempt 1, timeout 600s).
 2026-04-20T10:19:29 Heartbeat preflight result: UniFi check-domain forwarding passed.
 ```
@@ -242,27 +242,6 @@ If UniFi is currently using DNS4ME resolver index `2`:
 docker compose run --rm unifi-dns4me populate-state --server-index 2
 ```
 
-### Manual UniFi DNS API test
-
-There is also a PowerShell helper for testing UniFi DNS policy writes directly:
-
-```powershell
-./scripts/Test-UnifiDnsPolicy.ps1 `
-  -UnifiHost "https://192.168.1.1" `
-  -ApiKey $env:UNIFI_API_KEY `
-  -SiteId "Default" `
-  -SkipTlsVerify `
-  -Action RoundTrip
-```
-
-`RoundTrip` creates a harmless `unifi-dns4me-test.invalid` forwarder, updates it with `PUT`, then deletes it. That lets you test whether UniFi accepts DNS Forward Domain updates without touching DNS4ME-managed entries.
-
-List current DNS policies:
-
-```powershell
-./scripts/Test-UnifiDnsPolicy.ps1 -ApiKey $env:UNIFI_API_KEY -SkipTlsVerify -Action List
-```
-
 ## Configuration
 
 | Variable | Required | Description |
@@ -309,7 +288,7 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
   "managed_rules": [
     {
       "domain": "bbc.co.uk",
-      "server": "3.10.65.124"
+      "server": "5.6.7.8"
     }
   ]
 }
