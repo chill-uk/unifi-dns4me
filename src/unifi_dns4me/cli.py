@@ -31,8 +31,8 @@ DNS4ME_CHECK_HOST = "check.dns4me.net"
 
 
 def _log(message: str, *, error: bool = False) -> None:
-    stream = sys.stderr if error else sys.stdout
-    print(f"{datetime.now().isoformat(timespec='seconds')} {message}", file=stream, flush=True)
+    prefix = "ERROR " if error else ""
+    print(f"{datetime.now().isoformat(timespec='seconds')} {prefix}{message}", flush=True)
 
 
 @dataclass(frozen=True)
@@ -539,26 +539,56 @@ def _unifi_check_domain_preflight(
 
     client = _client_for_config(config)
     _set_check_domain_forwarder(client, target_server)
-    if config.check_after_sync_delay_seconds > 0:
-        _log(
-            f"Waiting {config.check_after_sync_delay_seconds}s before DNS4ME preflight check "
-            f"so UniFi DNS changes can settle."
-        )
-        time.sleep(config.check_after_sync_delay_seconds)
-
-    try:
-        check_result = _check(log_output=True)
-    except RuntimeError as exc:
-        _log(f"Heartbeat preflight DNS4ME check failed: {exc}", error=True)
-        check_result = 1
-
-    if check_result == 0:
+    if _wait_for_unifi_check_domain_preflight(config):
         _log("Heartbeat preflight result: UniFi check-domain forwarding passed.")
         return True
 
     _log("Heartbeat preflight result: UniFi check-domain forwarding failed; restoring active resolver.")
     _set_check_domain_forwarder(client, active_server)
     return False
+
+
+def _wait_for_unifi_check_domain_preflight(config: Config) -> bool:
+    poll_seconds = config.check_after_sync_delay_seconds
+    timeout_seconds = config.heartbeat_switch_retry_seconds
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+
+    while True:
+        attempt += 1
+        if poll_seconds > 0:
+            _log(
+                f"Waiting {poll_seconds}s before DNS4ME preflight check "
+                f"(attempt {attempt}, timeout {timeout_seconds}s)."
+            )
+            time.sleep(poll_seconds)
+
+        try:
+            check_result = _check(log_output=True)
+        except RuntimeError as exc:
+            _log(f"Heartbeat preflight DNS4ME check failed: {exc}", error=True)
+            check_result = 1
+
+        if check_result == 0:
+            return True
+
+        remaining_seconds = int(deadline - time.monotonic())
+        if remaining_seconds <= 0:
+            _log(
+                f"Heartbeat preflight did not pass within {timeout_seconds}s; "
+                "giving up until the next switch retry window.",
+                error=True,
+            )
+            return False
+
+        if poll_seconds <= 0:
+            _log(
+                "CHECK_AFTER_SYNC_DELAY_SECONDS is 0, so preflight retry polling is disabled.",
+                error=True,
+            )
+            return False
+
+        _log(f"Heartbeat preflight still failing. Retrying in {poll_seconds}s ({remaining_seconds}s remaining).")
 
 
 def _set_check_domain_forwarder(client: UnifiClient, server: str) -> None:
@@ -864,68 +894,109 @@ def _sync(
 ) -> int:
     client = _client_for_config(config)
     state = load_state(config.state_path)
-
-    plan = _plan_sync(
-        existing=client.list_dns_policies(),
-        rules=rules,
-        managed_description=config.managed_description,
+    wanted_rules = _select_wanted_rules(
+        rules,
         max_servers_per_domain=config.max_servers_per_domain,
-        previously_managed=state.managed_rules,
         include_check_domain=config.include_check_domain,
         server_index=server_index,
     )
-
-    total_wanted = len(plan.unchanged) + len(plan.updates) + len(plan.creates)
     dns4me_servers = _dns4me_servers_from_rules(rules)
     current_resolver = _resolver_label(server_index, dns4me_servers)
-    _log(f"DNS4ME wants {total_wanted} UniFi Forward Domain policies.")
+    _log(f"DNS4ME wants {len(wanted_rules)} UniFi Forward Domain policies.")
     _log(f"Current DNS4ME resolver: {current_resolver}")
-    _log(f"Unchanged: {len(plan.unchanged)}")
-    _log(f"Updates needed: {len(plan.updates)}")
-    _log(f"Creates needed: {len(plan.creates)}")
-    writes_needed = len(plan.updates) + len(plan.creates)
-    if delete_stale:
-        writes_needed += len(plan.stale)
 
-    for update in plan.updates:
-        body = build_forward_domain_body(update.rule.domain, update.rule.server)
-        if dry_run:
-            _log(f"would update: {update.policy.name} {update.policy.value} -> {update.rule.server}")
-        else:
-            client.update_dns_policy(update.policy.id, body)
-            _log(f"updated: {update.policy.name} {update.policy.value} -> {update.rule.server}")
+    unchanged_count = 0
+    update_count = 0
+    create_count = 0
+    duplicate_cleanup_count = 0
 
-    for rule in plan.creates:
-        body = build_forward_domain_body(rule.domain, rule.server)
-        if dry_run:
-            _log(f"would create: {rule.domain} -> {rule.server}")
-        else:
-            client.create_dns_policy(body)
-            _log(f"created: {rule.domain} -> {rule.server}")
-
-    if delete_stale:
-        if not plan.stale:
-            _log("No stale managed policies found.")
-        for policy in plan.stale:
+    for rule in wanted_rules:
+        policies = _find_dns_policies_for_domain(client, rule.domain)
+        if not policies:
+            create_count += 1
             if dry_run:
-                _log(f"would delete stale: {policy.name} -> {policy.value}")
+                _log(f"would create: {rule.domain} -> {rule.server}")
             else:
+                client.create_dns_policy(build_forward_domain_body(rule.domain, rule.server))
+                _log(f"created: {rule.domain} -> {rule.server}")
+            continue
+
+        if len(policies) == 1:
+            if policies[0].value == rule.server:
+                unchanged_count += 1
+                continue
+
+            update_count += 1
+            policy = policies[0]
+            if dry_run:
+                _log(f"would update: {policy.name} {policy.value} -> {rule.server}")
+            else:
+                _replace_dns_policy(client, policy, rule)
+            continue
+
+        duplicate_cleanup_count += 1
+        matching_policies = [policy for policy in policies if policy.value == rule.server]
+        wrong_policies = [policy for policy in policies if policy.value != rule.server]
+        if not matching_policies:
+            create_count += 1
+        if dry_run:
+            for policy in wrong_policies:
+                _log(f"would delete duplicate: {policy.name} -> {policy.value}")
+            if matching_policies:
+                _log(f"would keep duplicate: {rule.domain} -> {rule.server}")
+            else:
+                _log(f"would create after duplicate cleanup: {rule.domain} -> {rule.server}")
+        else:
+            for policy in wrong_policies:
                 client.delete_dns_policy(policy.id)
-                _log(f"deleted stale: {policy.name} -> {policy.value}")
-    elif plan.stale:
-        _log(f"{len(plan.stale)} stale managed policies found but left in place because stale deletion is disabled.")
+                _log(f"deleted duplicate: {policy.name} -> {policy.value}")
+            if matching_policies:
+                _log(f"kept duplicate: {rule.domain} -> {rule.server}")
+            else:
+                client.create_dns_policy(build_forward_domain_body(rule.domain, rule.server))
+                _log(f"created after duplicate cleanup: {rule.domain} -> {rule.server}")
+
+    stale_deleted_count = 0
+    stale_rules = state.managed_rules - set(wanted_rules)
+    writes_needed = update_count + create_count + duplicate_cleanup_count
+    if delete_stale:
+        writes_needed += len(stale_rules)
+
+    if delete_stale:
+        if not stale_rules:
+            _log("No stale managed policies found.")
+        for stale_rule in sorted(stale_rules):
+            policies = [
+                policy
+                for policy in _find_dns_policies_for_domain(client, stale_rule.domain)
+                if policy.value == stale_rule.server
+            ]
+            if not policies:
+                continue
+            stale_deleted_count += len(policies)
+            if dry_run:
+                for policy in policies:
+                    _log(f"would delete stale: {policy.name} -> {policy.value}")
+            else:
+                for policy in policies:
+                    client.delete_dns_policy(policy.id)
+                    _log(f"deleted stale: {policy.name} -> {policy.value}")
+    elif stale_rules:
+        _log(f"{len(stale_rules)} stale managed policies found but left in place because stale deletion is disabled.")
+
+    _log(f"Unchanged: {unchanged_count}")
+    _log(f"Updated: {update_count}")
+    _log(f"Created: {create_count}")
+    _log(f"Duplicate cleanups: {duplicate_cleanup_count}")
 
     if dry_run:
         _log("Dry run complete. No UniFi changes were made.")
     else:
-        managed_rules = {rule for rule in plan.unchanged}
-        managed_rules.update(update.rule for update in plan.updates)
-        managed_rules.update(plan.creates)
         save_state(
             config.state_path,
             ManagedState(
                 active_server_index=server_index,
-                managed_rules=managed_rules,
+                managed_rules=set(wanted_rules),
                 dns4me_servers=dns4me_servers,
             ),
         )
@@ -935,9 +1006,10 @@ def _sync(
                 "unifi-dns4me sync changed UniFi DNS policies",
                 (
                     f"Current DNS4ME resolver: {current_resolver}\n"
-                    f"Created: {len(plan.creates)}\n"
-                    f"Updated: {len(plan.updates)}\n"
-                    f"Deleted stale: {len(plan.stale) if delete_stale else 0}"
+                    f"Created: {create_count}\n"
+                    f"Updated: {update_count}\n"
+                    f"Duplicate cleanups: {duplicate_cleanup_count}\n"
+                    f"Deleted stale: {stale_deleted_count}"
                 ),
                 level="warning",
                 event="sync_changes",
@@ -953,6 +1025,113 @@ def _sync(
         return _check(log_output=True)
 
     return 0
+
+
+def _replace_dns_policy(client: UnifiClient, policy: DnsPolicy, rule: ForwardRule) -> None:
+    body = build_forward_domain_body(rule.domain, rule.server)
+    update_policy = _refresh_dns_policy_for_update(client, policy, rule)
+    last_error: UnifiApiError | None = None
+    for attempt in range(1, 3):
+        try:
+            client.update_dns_policy(update_policy.id, body)
+            if attempt > 1:
+                _log(f"updated after retry: {update_policy.name} {update_policy.value} -> {rule.server}")
+            else:
+                _log(f"updated: {update_policy.name} {update_policy.value} -> {rule.server}")
+            return
+        except UnifiApiError as exc:
+            last_error = exc
+            if attempt == 1:
+                update_policy = _refresh_dns_policy_for_update(client, update_policy, rule)
+                _log(
+                    f"update failed for {update_policy.name} {update_policy.value} -> {rule.server}; "
+                    "refreshing policy id and retrying once.",
+                    error=True,
+                )
+                _log_dns_policy_put_call(client, update_policy.id, body)
+                time.sleep(2)
+
+    if last_error:
+        _log(
+            f"update failed for {update_policy.name} {update_policy.value} -> {rule.server}; "
+            f"PUT-only update failed: {last_error}",
+            error=True,
+        )
+        _log_dns_policy_put_call(client, update_policy.id, body)
+        raise last_error
+
+
+def _log_dns_policy_put_call(client: UnifiClient, policy_id: str, body: dict[str, object]) -> None:
+    path = f"/proxy/network/integration/v1/sites/{client.site_id}/dns/policies/{policy_id}"
+    curl_insecure = " -k" if not client.verify_tls else ""
+    payload = json.dumps(body, sort_keys=True)
+    escaped_payload = payload.replace("'", "'\"'\"'")
+    _log(
+        "UniFi PUT debug: "
+        f"curl{curl_insecure} -X PUT '{client.host}{path}' "
+        "-H 'Accept: application/json' "
+        "-H 'X-API-Key: <redacted>' "
+        "-H 'Content-Type: application/json' "
+        f"--data '{escaped_payload}'",
+        error=True,
+    )
+
+
+def _refresh_dns_policy_for_update(client: UnifiClient, policy: DnsPolicy, rule: ForwardRule) -> DnsPolicy:
+    refreshed_policy = _find_dns_policy_for_update(client, policy, rule)
+    if refreshed_policy and refreshed_policy.id != policy.id:
+        _log(f"refreshed policy id for {policy.name}: {policy.id} -> {refreshed_policy.id}")
+        return refreshed_policy
+    return policy
+
+
+def _find_dns_policy_for_update(client: UnifiClient, policy: DnsPolicy, rule: ForwardRule) -> DnsPolicy | None:
+    candidates = _find_dns_policies_for_domain(client, policy.name)
+
+    exact_current = [
+        candidate
+        for candidate in candidates
+        if candidate.type == "FORWARD_DOMAIN" and candidate.name == policy.name and candidate.value == policy.value
+    ]
+    if exact_current:
+        return exact_current[0]
+
+    same_domain = [
+        candidate
+        for candidate in candidates
+        if candidate.type == "FORWARD_DOMAIN" and candidate.name == policy.name
+    ]
+    if len(same_domain) == 1:
+        return same_domain[0]
+
+    already_target = [
+        candidate
+        for candidate in same_domain
+        if candidate.value == rule.server
+    ]
+    if already_target:
+        return already_target[0]
+
+    return None
+
+
+def _find_dns_policies_for_domain(client: UnifiClient, domain: str) -> list[DnsPolicy]:
+    policy_filter = f"domain.eq('{domain.replace("'", "\\'")}')"
+    try:
+        candidates = client.list_dns_policies(policy_filter=policy_filter)
+    except UnifiApiError as exc:
+        _log(f"could not list DNS policies for {domain} using filter {policy_filter}: {exc}", error=True)
+        try:
+            candidates = client.list_dns_policies()
+        except UnifiApiError as fallback_exc:
+            _log(f"could not list DNS policies for {domain}: {fallback_exc}", error=True)
+            return []
+
+    return [
+        policy
+        for policy in candidates
+        if policy.type == "FORWARD_DOMAIN" and policy.name == domain
+    ]
 
 
 def _client_for_config(config: Config) -> UnifiClient:
@@ -983,6 +1162,7 @@ def _plan_sync(
     previously_managed: set[ForwardRule] | None = None,
     include_check_domain: bool = True,
     server_index: int = 1,
+    recover_dns4me_domain_matches: bool = False,
 ) -> SyncPlan:
     wanted_rules = _select_wanted_rules(
         rules,
@@ -1000,6 +1180,12 @@ def _plan_sync(
         ("FORWARD_DOMAIN", rule.domain, rule.server): rule
         for rule in wanted_rules
     }
+    dns4me_servers_by_domain: dict[str, set[str]] = {}
+    if recover_dns4me_domain_matches:
+        for rule in rules:
+            dns4me_servers_by_domain.setdefault(rule.domain, set()).add(rule.server)
+        if include_check_domain:
+            dns4me_servers_by_domain.setdefault("dns4me.net", set()).update(_dns4me_servers_from_rules(rules))
 
     unchanged = [
         rule
@@ -1017,6 +1203,7 @@ def _plan_sync(
         stale_rule = ForwardRule(domain=policy.name, server=policy.value)
         if key not in wanted_by_key and (
             policy.raw.get("description") == managed_description or stale_rule in previously_managed
+            or policy.value in dns4me_servers_by_domain.get(policy.name, set())
         ):
             managed_stale.append(policy)
     managed_stale_by_domain: dict[str, list[DnsPolicy]] = {}

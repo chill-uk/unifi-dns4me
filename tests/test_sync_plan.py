@@ -162,6 +162,46 @@ class SyncPlanTest(unittest.TestCase):
         self.assertEqual(plan.creates, [])
         self.assertEqual(plan.stale, [])
 
+    def test_resolver_switch_can_recover_dns4me_domain_matches_without_state(self) -> None:
+        plan = _plan_sync(
+            existing=[policy("1", "example.com", "1.1.1.1", description=None)],
+            rules=[
+                ForwardRule("example.com", "1.1.1.1"),
+                ForwardRule("example.com", "2.2.2.2"),
+            ],
+            managed_description=MANAGED,
+            max_servers_per_domain=1,
+            previously_managed=set(),
+            include_check_domain=False,
+            server_index=2,
+            recover_dns4me_domain_matches=True,
+        )
+
+        self.assertEqual(len(plan.updates), 1)
+        self.assertEqual(plan.updates[0].policy.id, "1")
+        self.assertEqual(plan.updates[0].rule, ForwardRule("example.com", "2.2.2.2"))
+        self.assertEqual(plan.creates, [])
+        self.assertEqual(plan.stale, [])
+
+    def test_resolver_switch_does_not_recover_non_dns4me_manual_forwarder(self) -> None:
+        plan = _plan_sync(
+            existing=[policy("1", "example.com", "9.9.9.9", description=None)],
+            rules=[
+                ForwardRule("example.com", "1.1.1.1"),
+                ForwardRule("example.com", "2.2.2.2"),
+            ],
+            managed_description=MANAGED,
+            max_servers_per_domain=1,
+            previously_managed=set(),
+            include_check_domain=False,
+            server_index=2,
+            recover_dns4me_domain_matches=True,
+        )
+
+        self.assertEqual(plan.updates, [])
+        self.assertEqual(plan.creates, [ForwardRule("example.com", "2.2.2.2")])
+        self.assertEqual(plan.stale, [])
+
     def test_second_server_index_uses_first_when_domain_has_no_second(self) -> None:
         plan = _plan_sync(
             existing=[],

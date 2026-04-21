@@ -1,6 +1,6 @@
 [project]
 name = "unifi-dns4me"
-version = "0.1.0"
+version = "1.5.0"
 description = "Sync DNS4ME dnsmasq conditional forwarding rules into UniFi DNS Forward Domain policies."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,6 +8,7 @@ license = { text = "MIT" }
 authors = [{ name = "unifi-dns4me contributors" }]
 dependencies = [
   "apprise>=1.9",
+  "requests>=2.32",
 ]
 
 [project.scripts]

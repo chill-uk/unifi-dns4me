@@ -2,16 +2,15 @@ services:
   unifi-dns4me:
     image: ghcr.io/chill-uk/unifi-dns4me:latest
     container_name: unifi-dns4me
-    user: "0:0"
     # Uncomment the following lines to use an .env file for environment variables
-    # env_file:
-      # - .env
+    env_file:
+      - .env
     environment:
       # Required
-      DNS4ME_API_KEY: ${DNS4ME_API_KEY}
-      UNIFI_API_KEY: ${UNIFI_API_KEY}
+      #DNS4ME_API_KEY: ${DNS4ME_API_KEY}
+      #UNIFI_API_KEY: ${UNIFI_API_KEY}
       STATE_PATH: /data/state.json
-      TZ: Europe/Amsterdam
+      # TZ: Europe/Amsterdam
 
       # Optional
       # UNIFI_HOST: https://192.168.1.1
@@ -21,7 +20,7 @@ services:
       # SYNC_AT: "03:15"
       # DELETE_STALE: "true"
       # CHECK_AFTER_SYNC: "true"
-      # CHECK_AFTER_SYNC_DELAY_SECONDS: "10"
+      # CHECK_AFTER_SYNC_DELAY_SECONDS: "30"
       # HEARTBEAT_ENABLED: "true"
       # HEARTBEAT_INTERVAL_SECONDS: "300"
       # HEARTBEAT_FAILURES_BEFORE_SWITCH: "2"
@@ -41,7 +40,7 @@ services:
 
       # Debugging
       # DNS4ME_MAX_SERVERS_PER_DOMAIN: "1"
-      # DNS4ME_INCLUDE_CHECK_DOMAIN: "false"
+      # DNS4ME_INCLUDE_CHECK_DOMAIN: "true"
 
     volumes:
       - unifi-dns4me-data:/data

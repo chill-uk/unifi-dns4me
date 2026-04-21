@@ -18,7 +18,7 @@ class StateTest(unittest.TestCase):
             path = str(Path(directory) / "nested" / "state.json")
             rules = {
                 ForwardRule("example.com", "1.1.1.1"),
-                ForwardRule("bbc.co.uk", "3.10.65.124"),
+                ForwardRule("bbc.co.uk", "1.2.3.4"),
             }
 
             save_managed_rules(path, rules)
@@ -28,14 +28,14 @@ class StateTest(unittest.TestCase):
     def test_save_and_load_full_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "state.json")
-            rules = {ForwardRule("bbc.co.uk", "3.10.65.124")}
+            rules = {ForwardRule("bbc.co.uk", "1.2.3.4")}
 
             save_state(
                 path,
                 ManagedState(
                     active_server_index=2,
                     managed_rules=rules,
-                    dns4me_servers=("3.10.65.124", "3.10.65.125"),
+                    dns4me_servers=("1.2.3.4", "5.6.7.8"),
                 ),
             )
 
@@ -44,7 +44,7 @@ class StateTest(unittest.TestCase):
                 ManagedState(
                     active_server_index=2,
                     managed_rules=rules,
-                    dns4me_servers=("3.10.65.124", "3.10.65.125"),
+                    dns4me_servers=("1.2.3.4", "5.6.7.8"),
                 ),
             )
 

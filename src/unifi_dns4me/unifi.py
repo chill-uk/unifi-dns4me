@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
-import ssl
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+import requests
 
 
 @dataclass(frozen=True)
@@ -44,24 +41,28 @@ class UnifiClient:
         self.api_key = api_key
         self.site_id = site_id
         self.timeout = timeout
-        self.ssl_context = None
+        self.verify_tls = not skip_tls_verify
+        self.session = requests.Session()
         if skip_tls_verify:
-            self.ssl_context = ssl._create_unverified_context()
+            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
     def list_sites(self) -> list[Site]:
         response = self._request("GET", "/proxy/network/integration/v1/sites")
         return [_site_from_raw(site) for site in _extract_items(response)]
 
-    def list_dns_policies(self) -> list[DnsPolicy]:
+    def list_dns_policies(self, policy_filter: str | None = None) -> list[DnsPolicy]:
         records: list[dict[str, Any]] = []
         offset = 0
         limit = 200
 
         while True:
+            query: dict[str, Any] = {"offset": offset, "limit": limit}
+            if policy_filter:
+                query["filter"] = policy_filter
             response = self._request(
                 "GET",
                 f"/proxy/network/integration/v1/sites/{self.site_id}/dns/policies",
-                query={"offset": offset, "limit": limit},
+                query=query,
             )
             batch = _extract_items(response)
             records.extend(batch)
@@ -100,50 +101,52 @@ class UnifiClient:
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.host}{path}"
-        if query:
-            url = f"{url}?{urlencode(query)}"
-
-        payload = None
         headers = {
             "Accept": "application/json",
-            "X-API-KEY": self.api_key,
+            "X-API-Key": self.api_key,
         }
         if body is not None:
-            payload = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        request = Request(url, data=payload, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=self.timeout, context=self.ssl_context) as response:
-                data = response.read()
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            response = self.session.request(
+                method,
+                url,
+                params=query,
+                headers=headers,
+                json=body,
+                timeout=self.timeout,
+                verify=self.verify_tls,
+            )
+        except requests.RequestException as exc:
             hint = ""
-            if exc.code == 401:
+            if self.verify_tls:
+                hint = " If this is a local UniFi console with a self-signed certificate, set UNIFI_SKIP_TLS_VERIFY=true."
+            raise UnifiApiError(f"{method} {path} failed: {exc}.{hint}") from exc
+
+        if response.status_code >= 400:
+            detail = response.text
+            hint = ""
+            if response.status_code == 401:
                 hint = (
                     " Check that UNIFI_API_KEY is a local UniFi Network Integration API key "
                     "from Network > Settings > Control Plane > Integrations, not a Site Manager, "
                     "Protect, Access, or user password token."
                 )
-            if exc.code == 400 and "api.request.unknown-property" in detail:
+            if response.status_code == 400 and "api.request.unknown-property" in detail:
                 hint = (
                     " This UniFi Network version uses a different DNS policy write schema. "
                     "Run `unifi-dns4me existing --raw --limit 1` and inspect the raw fields for an existing "
                     "Forward Domain policy."
                 )
-            raise UnifiApiError(f"{method} {path} failed: HTTP {exc.code}: {detail}.{hint}") from exc
-        except URLError as exc:
-            hint = ""
-            if not self.ssl_context:
-                hint = " If this is a local UniFi console with a self-signed certificate, set UNIFI_SKIP_TLS_VERIFY=true."
-            raise UnifiApiError(f"{method} {path} failed: {exc.reason}.{hint}") from exc
+            raise UnifiApiError(f"{method} {path} failed: HTTP {response.status_code}: {detail}.{hint}")
 
-        if not data:
+        if not response.content:
             return {}
 
         try:
-            return json.loads(data)
-        except json.JSONDecodeError as exc:
+            return response.json()
+        except ValueError as exc:
             raise UnifiApiError(f"{method} {path} returned non-JSON response") from exc
 
 def build_forward_domain_body(domain: str, server: str, description: str | None = None) -> dict[str, Any]:

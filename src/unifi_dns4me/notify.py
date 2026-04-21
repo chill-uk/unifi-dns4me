@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TextIO
@@ -20,7 +19,7 @@ class NotificationConfig:
 class Notifier:
     def __init__(self, config: NotificationConfig, *, stream: TextIO | None = None) -> None:
         self.config = config
-        self.stream = stream or sys.stderr
+        self.stream = stream
         self._apprise = None
         self._missing_logged = False
 
@@ -105,4 +104,7 @@ class Notifier:
         return title
 
     def _log(self, message: str) -> None:
-        print(f"{datetime.now().isoformat(timespec='seconds')} {message}", file=self.stream, flush=True)
+        if self.stream is None:
+            print(f"{datetime.now().isoformat(timespec='seconds')} ERROR {message}", flush=True)
+            return
+        print(f"{datetime.now().isoformat(timespec='seconds')} ERROR {message}", file=self.stream, flush=True)
