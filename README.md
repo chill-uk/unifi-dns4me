@@ -21,11 +21,25 @@ This version uses the UniFi Network API instead:
 ## Requirements
 
 - Python 3.10+ / Docker
-- DNS4ME API key or raw dnsmasq API URL
+- DNS4ME dnsmasq API key
+- DNS4ME whitelist/update-zone API key
 - UniFi Network API key
 - A UniFi gateway/network version that supports DNS `Forward Domain` policies
 
-## Obtaining DNS4ME API key or raw dnsmasq API URL
+## Breaking Changes
+
+Recent versions split DNS4ME configuration into two separate keys because DNS4ME uses different API keys for different actions:
+
+- `DNS4ME_DNSMASQ_API_KEY` downloads the dnsmasq feed.
+- `DNS4ME_WHITELIST_API_KEY` refreshes your public IP whitelist.
+
+Older installs using `DNS4ME_API_KEY` or `DNS4ME_DNSMASQ_URL` need to update their `.env`, Docker Compose file, or Unraid template variables. Those old variables are no longer used.
+
+If you already have a state file, keep it. The state file now only tracks the DNS forwarders this tool manages. The active DNS4ME resolver is read from the UniFi `dns4me.net` Forward Domain entry.
+
+`CHECK_AFTER_SYNC_DELAY_SECONDS` now defaults to `30` seconds, and heartbeat logging defaults to enabled so first-run and failover behaviour is easier to follow from container logs.
+
+## Obtaining DNS4ME API keys
 
 Log into your DNS4ME account and navigate to this page: [Host File](https://dns4me.net/user/hosts_file)
 
@@ -33,7 +47,15 @@ Select the `dnsmasq Config` tab at the top and then click the `Show Raw dnsmasq 
 
 For example: `https://dns4me.net/api/v2/get_hosts/dnsmasq/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
-Your `DNS4ME API key` is just the string at the end `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+Your `DNS4ME_DNSMASQ_API_KEY` is just the string at the end `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+
+The whitelist key is separate. DNS4ME exposes it through the update-zone URL:
+
+```text
+https://dns4me.net/user/update_zone_api/yyyy-xxxxxx-xxxxxx
+```
+
+Your `DNS4ME_WHITELIST_API_KEY` is the final path segment, for example `yyyy-xxxxxx-xxxxxx`.
 
 ## Generating your Unifi Network API key
 
