@@ -19,6 +19,10 @@ def dns4me_url(api_key: str) -> str:
     return f"https://dns4me.net/api/v2/get_hosts/dnsmasq/{api_key}"
 
 
+def dns4me_update_zone_url(api_key: str) -> str:
+    return f"https://dns4me.net/user/update_zone_api/{api_key}"
+
+
 def fetch_dnsmasq_config(url: str, timeout: float = 30.0) -> str:
     request = Request(url, headers={"User-Agent": "unifi-dns4me/0.1"})
     try:
@@ -27,6 +31,16 @@ def fetch_dnsmasq_config(url: str, timeout: float = 30.0) -> str:
             return response.read().decode(charset)
     except URLError as exc:
         raise RuntimeError(f"Could not fetch DNS4ME dnsmasq feed from {url}: {exc.reason}") from exc
+
+
+def update_dns4me_zone(url: str, timeout: float = 30.0) -> str:
+    request = Request(url, headers={"User-Agent": "unifi-dns4me/0.1"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset)
+    except URLError as exc:
+        raise RuntimeError(f"Could not update DNS4ME whitelisted IP via {url}: {exc.reason}") from exc
 
 
 def fetch_dns4me_check(timeout: float = 30.0) -> dict[str, Any]:

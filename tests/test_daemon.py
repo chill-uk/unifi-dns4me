@@ -11,6 +11,8 @@ from unifi_dns4me.cli import (
     _alternate_server_index,
     _first_success,
     _dns4me_server_for_index,
+    _fetch_dns4me_rules,
+    _wait_for_dns4me_after_whitelist_refresh,
     _next_daily_run,
     _parse_daily_time,
     _replace_dns_policy,
@@ -254,6 +256,61 @@ class DaemonScheduleTest(unittest.TestCase):
         self.assertEqual(client.created, ["2.2.2.2"])
         self.assertEqual(client.updated, [])
 
+    def test_fetch_dns4me_rules_updates_zone_before_fetching_feed(self) -> None:
+        config = sync_config("state.json")
+        config.dns4me_source_url = "https://dns4me.test/feed"
+        config.dns4me_update_zone_url = "https://dns4me.test/update"
+        calls = []
+
+        def fake_update(url):
+            calls.append(("update", url))
+            return "OK"
+
+        def fake_fetch(url):
+            calls.append(("fetch", url))
+            return "server=/example.com/1.1.1.1\n"
+
+        with patch("unifi_dns4me.cli.update_dns4me_zone", side_effect=fake_update):
+            with patch("unifi_dns4me.cli.fetch_dnsmasq_config", side_effect=fake_fetch):
+                with redirect_stdout(StringIO()):
+                    rules = _fetch_dns4me_rules(config, update_zone=True)
+
+        self.assertEqual(
+            calls,
+            [
+                ("update", "https://dns4me.test/update"),
+                ("fetch", "https://dns4me.test/feed"),
+            ],
+        )
+        self.assertEqual(rules, [ForwardRule("example.com", "1.1.1.1")])
+
+    def test_fetch_dns4me_rules_continues_when_zone_update_fails(self) -> None:
+        config = sync_config("state.json")
+        config.dns4me_source_url = "https://dns4me.test/feed"
+        config.dns4me_update_zone_url = "https://dns4me.test/update"
+
+        with patch("unifi_dns4me.cli.update_dns4me_zone", side_effect=RuntimeError("nope")):
+            with patch("unifi_dns4me.cli.fetch_dnsmasq_config", return_value="server=/example.com/1.1.1.1\n"):
+                with redirect_stdout(StringIO()):
+                    rules = _fetch_dns4me_rules(config, update_zone=True)
+
+        self.assertEqual(rules, [ForwardRule("example.com", "1.1.1.1")])
+
+    def test_whitelist_recovery_polls_until_dns4me_passes(self) -> None:
+        config = sync_config("state.json")
+        config.whitelist_check_delay_seconds = 30
+        config.whitelist_check_timeout_seconds = 120
+        checks = [CheckOutcome(False, "DNS4ME check failed"), CheckOutcome(True, "DNS4ME check passed")]
+
+        with patch("unifi_dns4me.cli._safe_update_dns4me_zone") as update_zone:
+            with patch("unifi_dns4me.cli._dns4me_health_check", side_effect=checks):
+                with patch("unifi_dns4me.cli.time.sleep") as sleep:
+                    with redirect_stdout(StringIO()):
+                        self.assertTrue(_wait_for_dns4me_after_whitelist_refresh(config))
+
+        update_zone.assert_called_once_with(config)
+        sleep.assert_any_call(30)
+
     def test_preflight_polling_retries_until_check_passes(self) -> None:
         config = StubConfig(delay=10, timeout=30)
         calls = []
@@ -332,11 +389,15 @@ class StubConfig:
 
 def sync_config(state_path):
     return SimpleNamespace(
+        dns4me_source_url="https://dns4me.test/feed",
+        dns4me_update_zone_url="https://dns4me.test/update",
         state_path=state_path,
         managed_description="managed by unifi-dns4me",
         max_servers_per_domain=1,
         include_check_domain=False,
         check_after_sync_delay_seconds=0,
+        whitelist_check_delay_seconds=30,
+        whitelist_check_timeout_seconds=120,
     )
 
 

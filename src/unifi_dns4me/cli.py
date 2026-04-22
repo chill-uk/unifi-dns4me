@@ -16,11 +16,13 @@ from . import __version__
 from .dns4me import (
     ForwardRule,
     dns4me_check_passed,
+    dns4me_update_zone_url,
     dns4me_url,
     fetch_dns4me_check,
     fetch_dnsmasq_config,
     group_by_domain,
     parse_dnsmasq_forward_rules,
+    update_dns4me_zone,
 )
 from .notify import NotificationConfig, Notifier
 from .state import ManagedState, load_state, save_state
@@ -38,6 +40,7 @@ def _log(message: str, *, error: bool = False) -> None:
 @dataclass(frozen=True)
 class Config:
     dns4me_source_url: str
+    dns4me_update_zone_url: str
     unifi_host: str
     unifi_api_key: str
     unifi_site_id: str
@@ -47,6 +50,8 @@ class Config:
     state_path: str
     check_after_sync: bool
     check_after_sync_delay_seconds: int
+    whitelist_check_delay_seconds: int
+    whitelist_check_timeout_seconds: int
     include_check_domain: bool
     heartbeat_internet_checks: tuple[tuple[str, int], ...]
     heartbeat_dns_check_domains: tuple[str, ...]
@@ -132,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     sync.add_argument(
         "--check-after-sync",
         action="store_true",
-        default=_env_bool("CHECK_AFTER_SYNC", default=False),
+        default=_env_bool("CHECK_AFTER_SYNC", default=True),
         help="Run DNS4ME's status check after sync.",
     )
     daemon = subparsers.add_parser("daemon", help="Run sync on startup, then once per day.")
@@ -156,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     daemon.add_argument(
         "--check-after-sync",
         action="store_true",
-        default=_env_bool("CHECK_AFTER_SYNC", default=False),
+        default=_env_bool("CHECK_AFTER_SYNC", default=True),
         help="Run DNS4ME's status check after each sync.",
     )
 
@@ -186,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 check_after_sync=args.check_after_sync,
             )
 
-        rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
+        rules = _fetch_dns4me_rules(config, update_zone=args.command == "sync")
         if not rules:
             print("No DNS4ME forward rules were found. Check your DNS4ME API key or source URL.", file=sys.stderr)
             return 2
@@ -280,7 +285,7 @@ def _run_scheduled_sync(
 ) -> None:
     _log("Starting scheduled sync.")
     try:
-        rules = parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
+        rules = _fetch_dns4me_rules(config, update_zone=True)
         if not rules:
             _log("No DNS4ME forward rules were found. Skipping this run.", error=True)
             return
@@ -311,7 +316,28 @@ def _run_scheduled_sync(
                 str(exc),
                 level="error",
                 event="sync_error",
-            )
+                )
+
+
+def _fetch_dns4me_rules(config: Config, *, update_zone: bool) -> list[ForwardRule]:
+    if update_zone:
+        _safe_update_dns4me_zone(config)
+    return parse_dnsmasq_forward_rules(fetch_dnsmasq_config(config.dns4me_source_url))
+
+
+def _safe_update_dns4me_zone(config: Config) -> None:
+    try:
+        _update_dns4me_zone(config)
+    except RuntimeError as exc:
+        _log(f"DNS4ME public IP whitelist update failed: {exc}", error=True)
+
+
+def _update_dns4me_zone(config: Config) -> None:
+    response = update_dns4me_zone(config.dns4me_update_zone_url).strip()
+    if response:
+        _log(f"DNS4ME public IP whitelist updated: {response}")
+    else:
+        _log("DNS4ME public IP whitelist updated.")
 
 
 def _wait_until_next_sync(
@@ -395,6 +421,18 @@ def _run_heartbeat(
                     f"Current DNS4ME resolver: {current_resolver}\n"
                     f"Passed after {previous_failures} failed heartbeat check(s)."
                 ),
+                level="warning",
+                event="check_recovery",
+            )
+        return
+
+    if _wait_for_dns4me_after_whitelist_refresh(config):
+        heartbeat.consecutive_failures = 0
+        _log("Heartbeat DNS4ME PASS after whitelist refresh. Resolver switch skipped.")
+        if previous_failures and notifier:
+            notifier.send(
+                "DNS4ME resolver recovered",
+                "DNS4ME passed after refreshing the whitelisted public IP.",
                 level="warning",
                 event="check_recovery",
             )
@@ -489,6 +527,46 @@ def _heartbeat_checks(config: Config) -> HeartbeatOutcome:
     dns4me = _dns4me_health_check()
     details.append(dns4me.message)
     return HeartbeatOutcome(prerequisites_ok=True, dns4me_ok=dns4me.ok, details=tuple(details))
+
+
+def _wait_for_dns4me_after_whitelist_refresh(config: Config) -> bool:
+    _log("Heartbeat DNS4ME failed; refreshing DNS4ME whitelisted public IP before counting failure.")
+    _safe_update_dns4me_zone(config)
+
+    delay_seconds = config.whitelist_check_delay_seconds
+    timeout_seconds = config.whitelist_check_timeout_seconds
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+
+    while True:
+        attempt += 1
+        if delay_seconds > 0:
+            _log(
+                f"Waiting {delay_seconds}s before DNS4ME whitelist recovery check "
+                f"(attempt {attempt}, timeout {timeout_seconds}s)."
+            )
+            time.sleep(delay_seconds)
+
+        outcome = _dns4me_health_check()
+        if outcome.ok:
+            return True
+
+        remaining_seconds = int(deadline - time.monotonic())
+        if remaining_seconds <= 0:
+            _log(
+                f"DNS4ME still failing after whitelist refresh window: {outcome.message}",
+                error=True,
+            )
+            return False
+
+        if delay_seconds <= 0:
+            _log(
+                f"DNS4ME still failing after whitelist refresh: {outcome.message}",
+                error=True,
+            )
+            return False
+
+        _log(f"DNS4ME whitelist recovery still failing. Retrying in {delay_seconds}s ({remaining_seconds}s remaining).")
 
 
 def _first_success(outcomes: Iterable[CheckOutcome], *, success_prefix: str, failure_prefix: str) -> CheckOutcome:
@@ -780,6 +858,7 @@ def _check(*, log_output: bool = False) -> int:
 def _doctor(config: Config) -> int:
     print("Configuration loaded.")
     print(f"DNS4ME source: {_redact_url(config.dns4me_source_url)}")
+    print(f"DNS4ME update-zone URL: {_redact_url(config.dns4me_update_zone_url)}")
     print(f"UniFi host: {config.unifi_host}")
     print(f"UniFi site id: {config.unifi_site_id}")
     print(f"UniFi API key: {_redact_secret(config.unifi_api_key)}")
@@ -788,6 +867,8 @@ def _doctor(config: Config) -> int:
     print(f"State path: {config.state_path}")
     print(f"Check after sync: {config.check_after_sync}")
     print(f"Check after sync delay seconds: {config.check_after_sync_delay_seconds}")
+    print(f"Whitelist check delay seconds: {config.whitelist_check_delay_seconds}")
+    print(f"Whitelist check timeout seconds: {config.whitelist_check_timeout_seconds}")
     print(f"Include dns4me.net forwarder: {config.include_check_domain}")
     internet_checks = ", ".join(f"{host}:{port}" for host, port in config.heartbeat_internet_checks)
     print(f"Heartbeat internet checks: {internet_checks}")
@@ -1369,13 +1450,14 @@ def _resolve_site_id(client: UnifiClient, configured_site: str) -> str:
 
 
 def _load_config() -> Config:
-    dns4me_source_url = os.getenv("DNS4ME_DNSMASQ_URL")
-    dns4me_api_key = os.getenv("DNS4ME_API_KEY")
-    if not dns4me_source_url and dns4me_api_key:
-        dns4me_source_url = dns4me_url(dns4me_api_key)
+    dns4me_dnsmasq_key = os.getenv("DNS4ME_DNSMASQ_API_KEY")
+    dns4me_whitelist_key = os.getenv("DNS4ME_WHITELIST_API_KEY")
+    dns4me_source_url = dns4me_url(dns4me_dnsmasq_key) if dns4me_dnsmasq_key else None
+    update_zone_url = dns4me_update_zone_url(dns4me_whitelist_key) if dns4me_whitelist_key else None
 
     values = {
-        "DNS4ME_DNSMASQ_URL or DNS4ME_API_KEY": dns4me_source_url,
+        "DNS4ME_DNSMASQ_API_KEY": dns4me_dnsmasq_key,
+        "DNS4ME_WHITELIST_API_KEY": dns4me_whitelist_key,
         "UNIFI_API_KEY": os.getenv("UNIFI_API_KEY"),
     }
     missing = [name for name, value in values.items() if not value]
@@ -1384,15 +1466,18 @@ def _load_config() -> Config:
 
     return Config(
         dns4me_source_url=str(dns4me_source_url),
+        dns4me_update_zone_url=str(update_zone_url),
         unifi_host=os.getenv("UNIFI_HOST", "https://192.168.1.1"),
         unifi_api_key=str(os.getenv("UNIFI_API_KEY")),
-        unifi_site_id=os.getenv("UNIFI_SITE_ID", "default"),
-        unifi_skip_tls_verify=_env_bool("UNIFI_SKIP_TLS_VERIFY", default=False),
+        unifi_site_id=os.getenv("UNIFI_SITE_ID", "Default"),
+        unifi_skip_tls_verify=_env_bool("UNIFI_SKIP_TLS_VERIFY", default=True),
         managed_description="managed by unifi-dns4me",
         max_servers_per_domain=_env_int("DNS4ME_MAX_SERVERS_PER_DOMAIN", default=1),
         state_path=os.getenv("STATE_PATH", ".unifi-dns4me-state.json"),
-        check_after_sync=_env_bool("CHECK_AFTER_SYNC", default=False),
-        check_after_sync_delay_seconds=_env_nonnegative_int("CHECK_AFTER_SYNC_DELAY_SECONDS", default=10),
+        check_after_sync=_env_bool("CHECK_AFTER_SYNC", default=True),
+        check_after_sync_delay_seconds=_env_nonnegative_int("CHECK_AFTER_SYNC_DELAY_SECONDS", default=30),
+        whitelist_check_delay_seconds=_env_nonnegative_int("WHITELIST_CHECK_DELAY_SECONDS", default=30),
+        whitelist_check_timeout_seconds=_env_positive_int("WHITELIST_CHECK_TIMEOUT_SECONDS", default=120),
         include_check_domain=_env_bool("DNS4ME_INCLUDE_CHECK_DOMAIN", default=True),
         heartbeat_internet_checks=_env_internet_checks(),
         heartbeat_dns_check_domains=tuple(
@@ -1418,8 +1503,8 @@ def _load_config() -> Config:
             default=2,
         ),
         heartbeat_switch_retry_seconds=_env_positive_int("HEARTBEAT_SWITCH_RETRY_SECONDS", default=600),
-        heartbeat_log_success=_env_bool("HEARTBEAT_LOG_SUCCESS", default=False),
-        heartbeat_log_details=_env_bool("HEARTBEAT_LOG_DETAILS", default=False),
+        heartbeat_log_success=_env_bool("HEARTBEAT_LOG_SUCCESS", default=True),
+        heartbeat_log_details=_env_bool("HEARTBEAT_LOG_DETAILS", default=True),
         notification_config=NotificationConfig(
             urls=tuple(_env_optional_csv("NOTIFY_URLS")),
             on_sync_error=_env_bool("NOTIFY_ON_SYNC_ERROR", default=True),

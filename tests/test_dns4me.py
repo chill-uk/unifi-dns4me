@@ -1,6 +1,12 @@
 import unittest
 
-from unifi_dns4me.dns4me import ForwardRule, dns4me_check_passed, group_by_domain, parse_dnsmasq_forward_rules
+from unifi_dns4me.dns4me import (
+    ForwardRule,
+    dns4me_check_passed,
+    dns4me_update_zone_url,
+    group_by_domain,
+    parse_dnsmasq_forward_rules,
+)
 
 
 class Dns4meParserTest(unittest.TestCase):
@@ -42,6 +48,12 @@ class Dns4meParserTest(unittest.TestCase):
         self.assertTrue(dns4me_check_passed({"result": "PASS"}))
         self.assertTrue(dns4me_check_passed({"result": "pass"}))
         self.assertFalse(dns4me_check_passed({"result": "FAIL"}))
+
+    def test_dns4me_update_zone_url(self) -> None:
+        self.assertEqual(
+            dns4me_update_zone_url("abc-123"),
+            "https://dns4me.net/user/update_zone_api/abc-123",
+        )
 
 
 if __name__ == "__main__":

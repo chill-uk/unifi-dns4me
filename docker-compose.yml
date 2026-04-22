@@ -7,17 +7,17 @@ services:
       - .env
     environment:
       # Required
-      #DNS4ME_API_KEY: ${DNS4ME_API_KEY}
-      #UNIFI_API_KEY: ${UNIFI_API_KEY}
-      STATE_PATH: /data/state.json
-      # TZ: Europe/Amsterdam
-
+      # DNS4ME_DNSMASQ_API_KEY: ${DNS4ME_DNSMASQ_API_KEY}
+      # DNS4ME_WHITELIST_API_KEY: ${DNS4ME_WHITELIST_API_KEY}
+      # UNIFI_API_KEY: ${UNIFI_API_KEY}
+      TZ: Europe/Amsterdam
+      SYNC_AT: "03:15"
+      
       # Optional
+      # STATE_PATH: /data/state.json
       # UNIFI_HOST: https://192.168.1.1
-      # DNS4ME_DNSMASQ_URL: https://dns4me.net/api/v2/get_hosts/dnsmasq/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-      # UNIFI_SITE_ID: default
+      # UNIFI_SITE_ID: Default
       # UNIFI_SKIP_TLS_VERIFY: "true"
-      # SYNC_AT: "03:15"
       # DELETE_STALE: "true"
       # CHECK_AFTER_SYNC: "true"
       # CHECK_AFTER_SYNC_DELAY_SECONDS: "30"
@@ -25,11 +25,11 @@ services:
       # HEARTBEAT_INTERVAL_SECONDS: "300"
       # HEARTBEAT_FAILURES_BEFORE_SWITCH: "2"
       # HEARTBEAT_SWITCH_RETRY_SECONDS: "600"
+      # WHITELIST_CHECK_DELAY_SECONDS: "30"
+      # WHITELIST_CHECK_TIMEOUT_SECONDS: "120"
       # HEARTBEAT_INTERNET_CHECKS: 1.1.1.1:443,8.8.8.8:443,9.9.9.9:443
       # HEARTBEAT_DNS_CHECK_DOMAINS: cloudflare.com,dns.google,quad9.net
       # HEARTBEAT_HTTP_CHECK_URLS: https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/
-      # HEARTBEAT_LOG_SUCCESS: "false"
-      # HEARTBEAT_LOG_DETAILS: "false"
       # NOTIFY_URLS: tgram://bot_token/chat_id,discord://webhook_id/webhook_token
       # NOTIFY_ON_SYNC_ERROR: "true"
       # NOTIFY_ON_SYNC_CHANGES: "true"
@@ -38,7 +38,9 @@ services:
       # NOTIFY_ON_CHECK_FAIL: "true"
       # NOTIFY_ON_CHECK_RECOVERY: "true"
 
-      # Debugging
+      # Debug
+      # HEARTBEAT_LOG_SUCCESS: "true"
+      # HEARTBEAT_LOG_DETAILS: "true"
       # DNS4ME_MAX_SERVERS_PER_DOMAIN: "1"
       # DNS4ME_INCLUDE_CHECK_DOMAIN: "true"
 

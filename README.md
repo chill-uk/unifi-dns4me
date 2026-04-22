@@ -244,39 +244,54 @@ docker compose run --rm unifi-dns4me populate-state --server-index 2
 
 ## Configuration
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `DNS4ME_API_KEY` | yes* | DNS4ME API key. Used to build `https://dns4me.net/api/v2/get_hosts/dnsmasq/{key}`. |
-| `DNS4ME_DNSMASQ_URL` | yes* | Full raw dnsmasq URL from DNS4ME. Takes precedence over `DNS4ME_API_KEY`. |
-| `UNIFI_HOST` | no | Local UniFi host. Defaults to `https://192.168.1.1`. |
-| `UNIFI_API_KEY` | yes | UniFi API key. |
-| `UNIFI_SITE_ID` | no | UniFi site short name or internal id. Defaults to `default`. |
-| `UNIFI_SKIP_TLS_VERIFY` | no | Set to `true` for self-signed local UniFi certificates. Defaults to `true` in `.env.example`. |
-| `DNS4ME_MAX_SERVERS_PER_DOMAIN` | no | Maximum DNS4ME resolver targets to create per domain. Defaults to `1`, matching UniFi's single DNS Server field. |
-| `DNS4ME_INCLUDE_CHECK_DOMAIN` | no | Add `dns4me.net` as a managed Forward Domain so DNS4ME's own status check resolves through DNS4ME. Defaults to `true`. |
-| `SYNC_AT` | no | Daily scheduler time for `daemon`, in `HH:MM` container local time. Defaults to `03:15`. |
-| `STATE_PATH` | no | Persistent state file used to track entries managed by this tool. Defaults to `.unifi-dns4me-state.json`; use `/data/state.json` for Docker with a `/data` volume. |
-| `DELETE_STALE` | no | Delete stale entries that the state file identifies as previously managed. Defaults to `true`. |
-| `CHECK_AFTER_SYNC` | no | Run `http://check.dns4me.net` after sync. Defaults to `true`. |
-| `CHECK_AFTER_SYNC_DELAY_SECONDS` | no | Seconds to wait after UniFi writes before running DNS4ME checks. For heartbeat preflight this is the polling interval. Defaults to `10`; set `0` to disable waiting/polling. |
-| `HEARTBEAT_ENABLED` | no | Enable periodic DNS4ME health checks while the daemon is running. Defaults to `true`. |
-| `HEARTBEAT_INTERVAL_SECONDS` | no | Seconds between heartbeat checks. Defaults to `300`. |
-| `HEARTBEAT_FAILURES_BEFORE_SWITCH` | no | Consecutive active DNS4ME resolver failures before trying the alternate resolver. Defaults to `2`. |
-| `HEARTBEAT_SWITCH_RETRY_SECONDS` | no | Cooldown before retrying a failed resolver switch attempt. Also bounds how long heartbeat preflight polling may wait for UniFi DNS changes to settle. Defaults to `600`. |
-| `HEARTBEAT_INTERNET_CHECKS` | no | Comma-separated `host:port` TCP checks used to confirm internet reachability. Defaults to `1.1.1.1:443,8.8.8.8:443,9.9.9.9:443`. |
-| `HEARTBEAT_DNS_CHECK_DOMAINS` | no | Comma-separated domains used for the heartbeat general DNS check. Defaults to `cloudflare.com,dns.google,quad9.net`. |
-| `HEARTBEAT_HTTP_CHECK_URLS` | no | Comma-separated URLs used for the heartbeat general HTTP check. Defaults to `https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/`. |
-| `HEARTBEAT_LOG_SUCCESS` | no | Log successful heartbeat summaries. Defaults to `false`; failures and resolver switches are always logged. |
-| `HEARTBEAT_LOG_DETAILS` | no | Log each heartbeat prerequisite check. Defaults to `false`; failed check details are still logged. |
-| `NOTIFY_URLS` | no | Optional comma-separated Apprise URLs. Leave empty to disable notifications. |
-| `NOTIFY_ON_SYNC_ERROR` | no | Notify when scheduled sync fails or post-sync checks fail. Defaults to `true`. |
-| `NOTIFY_ON_SYNC_CHANGES` | no | Notify when sync creates, updates, or deletes UniFi DNS policies. Defaults to `true`. |
-| `NOTIFY_ON_SWITCH` | no | Notify when heartbeat switches to the alternate DNS4ME resolver. Defaults to `true`. |
-| `NOTIFY_ON_SWITCH_FAILURE` | no | Notify when heartbeat cannot validate or complete a resolver switch. Defaults to `true`. |
-| `NOTIFY_ON_CHECK_FAIL` | no | Notify when heartbeat reaches the DNS4ME failure threshold. Defaults to `true`. |
-| `NOTIFY_ON_CHECK_RECOVERY` | no | Notify when the active resolver recovers after one or more failed heartbeat checks. Defaults to `true`. |
+The `.env.example` file is split into required, optional, and debug settings. Most settings have sensible defaults baked into the app and only need to be uncommented if you want to override them.
 
-*Use either `DNS4ME_API_KEY` or `DNS4ME_DNSMASQ_URL`.
+### Required
+
+| Variable | Description |
+| --- | --- |
+| `DNS4ME_DNSMASQ_API_KEY` | DNS4ME dnsmasq API key. Used to build `https://dns4me.net/api/v2/get_hosts/dnsmasq/{key}`. |
+| `DNS4ME_WHITELIST_API_KEY` | DNS4ME whitelist/update-zone API key. Used to call `https://dns4me.net/user/update_zone_api/{key}`. |
+| `UNIFI_API_KEY` | UniFi Network Integration API key. |
+
+### Optional
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `UNIFI_HOST` | `https://192.168.1.1` | Local UniFi host. |
+| `UNIFI_SITE_ID` | `Default` | UniFi site short name or internal id. |
+| `UNIFI_SKIP_TLS_VERIFY` | `true` | Set to `false` if your local UniFi certificate is trusted. |
+| `TZ` | image default | Container timezone used for logs and schedule. |
+| `SYNC_AT` | `03:15` | Daily scheduler time for `daemon`, in `HH:MM` container local time. |
+| `STATE_PATH` | `.unifi-dns4me-state.json` | Persistent state file. Docker examples use `/data/state.json`. |
+| `DELETE_STALE` | `true` | Delete stale entries that the state file identifies as previously managed. |
+| `CHECK_AFTER_SYNC` | `true` | Run `http://check.dns4me.net` after sync. |
+| `CHECK_AFTER_SYNC_DELAY_SECONDS` | `30` | Seconds to wait after UniFi writes before running DNS4ME checks. |
+| `HEARTBEAT_ENABLED` | `true` | Enable periodic DNS4ME health checks while the daemon is running. |
+| `HEARTBEAT_INTERVAL_SECONDS` | `300` | Seconds between heartbeat checks. |
+| `HEARTBEAT_FAILURES_BEFORE_SWITCH` | `2` | Consecutive active DNS4ME resolver failures before trying the alternate resolver. |
+| `HEARTBEAT_SWITCH_RETRY_SECONDS` | `600` | Cooldown before retrying a failed resolver switch attempt. Also bounds heartbeat preflight polling. |
+| `WHITELIST_CHECK_DELAY_SECONDS` | `30` | Seconds to wait between DNS4ME checks after refreshing the whitelist during heartbeat recovery. |
+| `WHITELIST_CHECK_TIMEOUT_SECONDS` | `120` | Maximum seconds to wait for DNS4ME to recover after a whitelist refresh before counting the heartbeat as failed. |
+| `HEARTBEAT_INTERNET_CHECKS` | `1.1.1.1:443,8.8.8.8:443,9.9.9.9:443` | Comma-separated `host:port` TCP checks used to confirm internet reachability. |
+| `HEARTBEAT_DNS_CHECK_DOMAINS` | `cloudflare.com,dns.google,quad9.net` | Comma-separated domains used for the heartbeat general DNS check. |
+| `HEARTBEAT_HTTP_CHECK_URLS` | Cloudflare, Google, Quad9 endpoints | Comma-separated URLs used for the heartbeat general HTTP check. |
+| `NOTIFY_URLS` | empty | Optional comma-separated Apprise URLs. Leave empty to disable notifications. |
+| `NOTIFY_ON_SYNC_ERROR` | `true` | Notify when scheduled sync fails or post-sync checks fail. |
+| `NOTIFY_ON_SYNC_CHANGES` | `true` | Notify when sync creates, updates, or deletes UniFi DNS policies. |
+| `NOTIFY_ON_SWITCH` | `true` | Notify when heartbeat switches to the alternate DNS4ME resolver. |
+| `NOTIFY_ON_SWITCH_FAILURE` | `true` | Notify when heartbeat cannot validate or complete a resolver switch. |
+| `NOTIFY_ON_CHECK_FAIL` | `true` | Notify when heartbeat reaches the DNS4ME failure threshold. |
+| `NOTIFY_ON_CHECK_RECOVERY` | `true` | Notify when the active resolver recovers after one or more failed heartbeat checks. |
+
+### Debug
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HEARTBEAT_LOG_SUCCESS` | `true` | Log successful heartbeat summaries. Failures and resolver switches are always logged. |
+| `HEARTBEAT_LOG_DETAILS` | `true` | Log each heartbeat prerequisite check. Failed check details are still logged. |
+| `DNS4ME_MAX_SERVERS_PER_DOMAIN` | `1` | Maximum DNS4ME resolver targets to create per domain. UniFi's Forward Domain UI has one DNS Server field. |
+| `DNS4ME_INCLUDE_CHECK_DOMAIN` | `true` | Add `dns4me.net` as a managed Forward Domain so DNS4ME's own status check resolves through DNS4ME. |
 
 ## State File
 
@@ -297,6 +312,8 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 ## How Sync Works
 
 - `sync` downloads DNS4ME's dnsmasq rules, selects the active DNS4ME resolver, and then processes each wanted domain one at a time.
+- The daemon calls DNS4ME's update-zone endpoint on startup. One-shot sync and each daemon sync call it again before fetching the dnsmasq feed.
+- If heartbeat sees a DNS4ME failure while prerequisite checks are healthy, it refreshes the DNS4ME whitelist and polls DNS4ME for up to `WHITELIST_CHECK_TIMEOUT_SECONDS`. Only if that recovery window fails does it count as a DNS4ME resolver failure.
 - For each domain, it queries UniFi with `filter=domain.eq('example.com')`.
 - If no Forward Domain policy exists, it creates one.
 - If one Forward Domain policy exists and already points to the current DNS4ME resolver, it leaves it alone.
@@ -312,7 +329,7 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - The DNS4ME check is only meaningful from a host or container whose DNS lookups use the UniFi gateway/DNS path you are configuring.
 - `CHECK_AFTER_SYNC` only runs and reports the DNS4ME status check after sync. When the sync writes UniFi DNS policies, the check waits `CHECK_AFTER_SYNC_DELAY_SECONDS` first so the new forwarder can settle. During heartbeat resolver switching, the preflight check polls every `CHECK_AFTER_SYNC_DELAY_SECONDS` until DNS4ME passes or `HEARTBEAT_SWITCH_RETRY_SECONDS` is reached.
 - Heartbeat checks distinguish "DNS4ME is down" from "the internet or general DNS is down" using TCP internet checks, normal DNS lookups, and HTTP requests. Configure multiple checks with the `HEARTBEAT_*` variables so one upstream service outage does not trigger a resolver switch on its own. The older single-value variables `HEARTBEAT_INTERNET_CHECK_HOST`, `HEARTBEAT_INTERNET_CHECK_PORT`, `HEARTBEAT_DNS_CHECK_DOMAIN`, and `HEARTBEAT_HTTP_CHECK_URL` still work for existing installs.
-- If heartbeat sees enough active DNS4ME resolver failures while prerequisites are healthy, it validates and switches to the alternate resolver. It does not prefer resolver `1`; whichever resolver is currently working stays active until it fails.
+- If heartbeat sees enough active DNS4ME resolver failures while prerequisites are healthy, and whitelist recovery has already timed out, it validates and switches to the alternate resolver. It does not prefer resolver `1`; whichever resolver is currently working stays active until it fails.
 - UniFi's local API documentation is available in UniFi Network under `Integrations`.
 
 ## Troubleshooting

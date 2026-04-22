@@ -24,20 +24,22 @@
 
   <Config Name="AppData" Target="/data" Default="/mnt/user/appdata/unifi-dns4me" Mode="rw" Description="Persistent app data and state.json" Type="Path" Display="always" Required="true" Mask="false"/>
 
-  <Config Name="DNS4ME API Key" Target="DNS4ME_API_KEY" Default="" Mode="" Description="Required unless DNS4ME_DNSMASQ_URL is used instead" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="DNS4ME dnsmasq API Key" Target="DNS4ME_DNSMASQ_API_KEY" Default="" Mode="" Description="Required DNS4ME dnsmasq API key" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="DNS4ME Whitelist API Key" Target="DNS4ME_WHITELIST_API_KEY" Default="" Mode="" Description="Required DNS4ME whitelist/update-zone API key" Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="UniFi API Key" Target="UNIFI_API_KEY" Default="" Mode="" Description="Required UniFi API key" Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="State Path" Target="STATE_PATH" Default="/data/state.json" Mode="" Description="Path to persistent state file" Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Timezone" Target="TZ" Default="Europe/Amsterdam" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false"/>
 
   <Config Name="UniFi Host" Target="UNIFI_HOST" Default="https://192.168.1.1" Mode="" Description="Optional UniFi host URL" Type="Variable" Display="advanced" Required="false" Mask="false"/>
-  <Config Name="DNS4ME dnsmasq URL" Target="DNS4ME_DNSMASQ_URL" Default="" Mode="" Description="Optional alternative to DNS4ME_API_KEY" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="UniFi Site ID" Target="UNIFI_SITE_ID" Default="Default" Mode="" Description="Optional UniFi site ID" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Skip TLS Verify" Target="UNIFI_SKIP_TLS_VERIFY" Default="true" Mode="" Description="Set to true to skip UniFi TLS verification" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="Sync At" Target="SYNC_AT" Default="03:15" Mode="" Description="Optional daily sync time in HH:MM" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Delete Stale" Target="DELETE_STALE" Default="true" Mode="" Description="Delete stale entries during sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Check After Sync" Target="CHECK_AFTER_SYNC" Default="true" Mode="" Description="Run checks after sync" Type="Variable" Display="advanced" Required="false" Mask="false"/>
-  <Config Name="Check After Sync Delay Seconds" Target="CHECK_AFTER_SYNC_DELAY_SECONDS" Default="10" Mode="" Description="Delay after UniFi writes before running the DNS4ME check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Check After Sync Delay Seconds" Target="CHECK_AFTER_SYNC_DELAY_SECONDS" Default="30" Mode="" Description="Delay after UniFi writes before running the DNS4ME check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Whitelist Check Delay Seconds" Target="WHITELIST_CHECK_DELAY_SECONDS" Default="30" Mode="" Description="Seconds to wait between DNS4ME checks after refreshing the whitelist" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Whitelist Check Timeout Seconds" Target="WHITELIST_CHECK_TIMEOUT_SECONDS" Default="120" Mode="" Description="Maximum seconds to wait for DNS4ME to recover after refreshing the whitelist" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="Heartbeat Enabled" Target="HEARTBEAT_ENABLED" Default="true" Mode="" Description="Enable heartbeat/failover checks" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat Interval Seconds" Target="HEARTBEAT_INTERVAL_SECONDS" Default="300" Mode="" Description="Heartbeat interval in seconds" Type="Variable" Display="advanced" Required="false" Mask="false"/>
@@ -46,8 +48,8 @@
   <Config Name="Heartbeat Internet Checks" Target="HEARTBEAT_INTERNET_CHECKS" Default="1.1.1.1:443,8.8.8.8:443,9.9.9.9:443" Mode="" Description="Comma-separated host:port list" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat DNS Check Domains" Target="HEARTBEAT_DNS_CHECK_DOMAINS" Default="cloudflare.com,dns.google,quad9.net" Mode="" Description="Comma-separated domains" Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Heartbeat HTTP Check URLs" Target="HEARTBEAT_HTTP_CHECK_URLS" Default="https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/" Mode="" Description="Comma-separated URLs" Type="Variable" Display="advanced" Required="false" Mask="false"/>
-  <Config Name="Heartbeat Log Success" Target="HEARTBEAT_LOG_SUCCESS" Default="false" Mode="" Description="Log successful heartbeat summaries" Type="Variable" Display="advanced" Required="false" Mask="false"/>
-  <Config Name="Heartbeat Log Details" Target="HEARTBEAT_LOG_DETAILS" Default="false" Mode="" Description="Log each heartbeat prerequisite check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Log Success" Target="HEARTBEAT_LOG_SUCCESS" Default="true" Mode="" Description="Log successful heartbeat summaries" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Heartbeat Log Details" Target="HEARTBEAT_LOG_DETAILS" Default="true" Mode="" Description="Log each heartbeat prerequisite check" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 
   <Config Name="Notification URLs" Target="NOTIFY_URLS" Default="" Mode="" Description="Optional comma-separated Apprise URLs" Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="Notify on Sync Error" Target="NOTIFY_ON_SYNC_ERROR" Default="true" Mode="" Description="Notify when scheduled sync fails or post-sync checks fail" Type="Variable" Display="advanced" Required="false" Mask="false"/>
