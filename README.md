@@ -1,3 +1,8 @@
+[![Docker Image](https://github.com/chill-uk/unifi-dns4me/actions/workflows/docker-image.yml/badge.svg)](https://github.com/chill-uk/unifi-dns4me/actions/workflows/docker-image.yml)
+![Stars](https://img.shields.io/github/stars/chill-uk/unifi-dns4me)
+![Python](https://img.shields.io/badge/python-3.x-blue)
+![Docker](https://img.shields.io/badge/docker-ready-blue)
+
 # unifi-dns4me
 
 This tool enables all devices on your network to benefit from DNS4ME geo-unblocking without individual device configuration. It downloads DNS4ME's dnsmasq feed via their API and syncs it into UniFi Network DNS Forward Domain policies, so your UniFi setup stays up-to-date with DNS4ME's servers.
@@ -41,6 +46,8 @@ If you already have a state file, keep it. The state file now only tracks the DN
 
 ## Obtaining DNS4ME API keys
 
+### DNS4ME DNSMASQ API key
+
 Log into your DNS4ME account and navigate to this page: [Host File](https://dns4me.net/user/hosts_file)
 
 Select the `dnsmasq Config` tab at the top and then click the `Show Raw dnsmasq API URL` button to reveal your raw dnsmasq API URL.
@@ -49,13 +56,23 @@ For example: `https://dns4me.net/api/v2/get_hosts/dnsmasq/xxxxxxxx-xxxx-xxxx-xxx
 
 Your `DNS4ME_DNSMASQ_API_KEY` is just the string at the end `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
 
+### DNS4ME Whitelist API key
+
 The whitelist key is separate. DNS4ME exposes it through the update-zone URL:
+Navigate to [zones](https://dns4me.net/user/console#tab_0)
+
+![Dropdown](media/whitelist-1.png)
+
+
+You should now see your API Key:
+![Key](media/whitelist-2.png)
 
 ```text
 https://dns4me.net/user/update_zone_api/yyyy-xxxxxx-xxxxxx
 ```
 
 Your `DNS4ME_WHITELIST_API_KEY` is the final path segment, for example `yyyy-xxxxxx-xxxxxx`.
+
 
 ## Generating your Unifi Network API key
 
