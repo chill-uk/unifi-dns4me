@@ -12,14 +12,15 @@ from unifi_dns4me.cli import (
     _first_success,
     _dns4me_server_for_index,
     _fetch_dns4me_rules,
-    _wait_for_dns4me_after_whitelist_refresh,
     _next_daily_run,
     _parse_daily_time,
     _replace_dns_policy,
+    _resolver_validation_loop,
     _resolver_label,
     _set_check_domain_forwarder,
+    _switch_resolver,
     _sync,
-    _wait_for_unifi_check_domain_preflight,
+    _validate_current_dns4me_resolver,
 )
 from unifi_dns4me.dns4me import ForwardRule
 from unifi_dns4me.unifi import DnsPolicy, UnifiApiError
@@ -233,6 +234,30 @@ class DaemonScheduleTest(unittest.TestCase):
         self.assertEqual(client.created, [])
         self.assertEqual(client.updated, [])
 
+    def test_sync_keeps_one_matching_duplicate_and_deletes_the_rest(self) -> None:
+        client = RecordingDnsPolicyClient(
+            [
+                DnsPolicy(id="current-policy-1", type="FORWARD_DOMAIN", name="example.com", value="2.2.2.2", raw={}),
+                DnsPolicy(id="current-policy-2", type="FORWARD_DOMAIN", name="example.com", value="2.2.2.2", raw={}),
+                DnsPolicy(id="old-policy", type="FORWARD_DOMAIN", name="example.com", value="1.1.1.1", raw={}),
+            ]
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            config = sync_config(f"{temp_dir}/state.json")
+            with patch("unifi_dns4me.cli._client_for_config", return_value=client):
+                with redirect_stdout(StringIO()):
+                    _sync(
+                        config,
+                        [ForwardRule("example.com", "2.2.2.2")],
+                        dry_run=False,
+                        delete_stale=True,
+                    )
+
+        self.assertEqual(client.deleted, ["current-policy-2", "old-policy"])
+        self.assertEqual(client.created, [])
+        self.assertEqual(client.updated, [])
+
     def test_sync_recreates_duplicate_when_no_policy_matches_current_forwarder(self) -> None:
         client = RecordingDnsPolicyClient(
             [
@@ -296,44 +321,128 @@ class DaemonScheduleTest(unittest.TestCase):
 
         self.assertEqual(rules, [ForwardRule("example.com", "1.1.1.1")])
 
-    def test_whitelist_recovery_polls_until_dns4me_passes(self) -> None:
+    def test_dns4me_validation_polls_until_dns4me_passes(self) -> None:
         config = sync_config("state.json")
-        config.whitelist_check_delay_seconds = 30
-        config.whitelist_check_timeout_seconds = 120
+        config.dns4me_validation_timeout_seconds = 120
         checks = [CheckOutcome(False, "DNS4ME check failed"), CheckOutcome(True, "DNS4ME check passed")]
 
         with patch("unifi_dns4me.cli._safe_update_dns4me_zone") as update_zone:
             with patch("unifi_dns4me.cli._dns4me_health_check", side_effect=checks):
                 with patch("unifi_dns4me.cli.time.sleep") as sleep:
                     with redirect_stdout(StringIO()):
-                        self.assertTrue(_wait_for_dns4me_after_whitelist_refresh(config))
+                        self.assertTrue(_validate_current_dns4me_resolver(config, context="test"))
 
         update_zone.assert_called_once_with(config)
-        sleep.assert_any_call(30)
+        sleep.assert_any_call(15)
 
-    def test_preflight_polling_retries_until_check_passes(self) -> None:
-        config = StubConfig(delay=10, timeout=30)
-        calls = []
+    def test_resolver_validation_loop_rotates_candidate_until_one_passes(self) -> None:
+        config = sync_config("state.json")
+        rules = [
+            ForwardRule("example.com", "1.1.1.1"),
+            ForwardRule("example.com", "2.2.2.2"),
+        ]
+        client = RecordingDnsPolicyClient(
+            [DnsPolicy(id="check-policy", type="FORWARD_DOMAIN", name="dns4me.net", value="1.1.1.1", raw={})]
+        )
 
-        def fake_check(*, log_output=False):
-            calls.append(log_output)
-            return 0 if len(calls) == 2 else 1
+        with patch("unifi_dns4me.cli._client_for_config", return_value=client):
+            with patch("unifi_dns4me.cli._validate_current_dns4me_resolver", side_effect=[False, True]):
+                with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
+                    with redirect_stdout(StringIO()):
+                        self.assertTrue(
+                            _resolver_validation_loop(
+                                config,
+                                rules=rules,
+                                starting_server_index=1,
+                                dry_run=False,
+                                delete_stale=True,
+                            )
+                        )
 
-        with patch("unifi_dns4me.cli._check", side_effect=fake_check):
-            with patch("unifi_dns4me.cli.time.sleep", return_value=None):
-                with redirect_stdout(StringIO()):
-                    self.assertTrue(_wait_for_unifi_check_domain_preflight(config))
+        self.assertEqual(client.updated, [("check-policy", "2.2.2.2")])
+        sync.assert_called_once_with(
+            config,
+            rules,
+            dry_run=False,
+            delete_stale=True,
+            check_after_sync=False,
+            server_index=2,
+            notifier=None,
+        )
 
-        self.assertEqual(calls, [True, True])
+    def test_switch_resolver_forces_target_without_validation(self) -> None:
+        config = sync_config("state.json")
+        rules = [
+            ForwardRule("example.com", "1.1.1.1"),
+            ForwardRule("example.com", "2.2.2.2"),
+        ]
+        client = RecordingDnsPolicyClient(
+            [DnsPolicy(id="check-policy", type="FORWARD_DOMAIN", name="dns4me.net", value="1.1.1.1", raw={})]
+        )
 
-    def test_preflight_polling_stops_when_polling_is_disabled(self) -> None:
-        config = StubConfig(delay=0, timeout=10)
+        with patch("unifi_dns4me.cli._client_for_config", return_value=client):
+            with patch("unifi_dns4me.cli._active_server_index_from_unifi_client", return_value=1):
+                with patch("unifi_dns4me.cli._validate_current_dns4me_resolver") as validate:
+                    with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
+                        with redirect_stdout(StringIO()):
+                            result = _switch_resolver(
+                                config,
+                                rules,
+                                target_server_index=2,
+                                dry_run=False,
+                                delete_stale=True,
+                                check_after_sync=True,
+                            )
 
-        with patch("unifi_dns4me.cli._check", return_value=1) as check:
-            with redirect_stdout(StringIO()):
-                self.assertFalse(_wait_for_unifi_check_domain_preflight(config))
+        self.assertEqual(result, 0)
+        validate.assert_not_called()
+        self.assertEqual(client.updated, [("check-policy", "2.2.2.2")])
+        sync.assert_called_once_with(
+            config,
+            rules,
+            dry_run=False,
+            delete_stale=True,
+            check_after_sync=True,
+            server_index=2,
+            notifier=None,
+        )
 
-        self.assertEqual(check.call_count, 1)
+    def test_switch_resolver_reconciles_when_target_is_already_active(self) -> None:
+        config = sync_config("state.json")
+        rules = [
+            ForwardRule("example.com", "1.1.1.1"),
+            ForwardRule("example.com", "2.2.2.2"),
+        ]
+        client = RecordingDnsPolicyClient(
+            [DnsPolicy(id="check-policy", type="FORWARD_DOMAIN", name="dns4me.net", value="2.2.2.2", raw={})]
+        )
+
+        with patch("unifi_dns4me.cli._client_for_config", return_value=client):
+            with patch("unifi_dns4me.cli._active_server_index_from_unifi_client", return_value=2):
+                with patch("unifi_dns4me.cli._validate_current_dns4me_resolver") as validate:
+                    with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
+                        with redirect_stdout(StringIO()):
+                            result = _switch_resolver(
+                                config,
+                                rules,
+                                target_server_index=2,
+                                dry_run=False,
+                                delete_stale=True,
+                                check_after_sync=False,
+                            )
+
+        self.assertEqual(result, 0)
+        validate.assert_not_called()
+        self.assertEqual(client.updated, [("check-policy", "2.2.2.2")])
+        sync.assert_called_once_with(
+            config,
+            rules,
+            dry_run=False,
+            delete_stale=True,
+            check_after_sync=False,
+            server_index=2,
+            notifier=None,
+        )
 
 
 class RecordingDnsPolicyClient:
@@ -382,9 +491,8 @@ class RecordingDnsPolicyClient:
 
 
 class StubConfig:
-    def __init__(self, *, delay, timeout):
-        self.check_after_sync_delay_seconds = delay
-        self.heartbeat_switch_retry_seconds = timeout
+    def __init__(self, *, timeout):
+        self.dns4me_validation_timeout_seconds = timeout
 
 
 def sync_config(state_path):
@@ -395,9 +503,7 @@ def sync_config(state_path):
         managed_description="managed by unifi-dns4me",
         max_servers_per_domain=1,
         include_check_domain=False,
-        check_after_sync_delay_seconds=0,
-        whitelist_check_delay_seconds=30,
-        whitelist_check_timeout_seconds=120,
+        dns4me_validation_timeout_seconds=120,
     )
 
 

@@ -4,10 +4,8 @@ from unittest.mock import patch
 from unifi_dns4me.cli import (
     _env_bool,
     _env_internet_checks,
-    _env_nonnegative_int,
     _env_optional_csv,
     _env_positive_int,
-    _env_positive_int_alias,
     _parse_csv,
     _parse_internet_checks,
 )
@@ -54,31 +52,9 @@ class HeartbeatConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "1 or greater"):
                 _env_positive_int("HEARTBEAT_INTERVAL_SECONDS", default=300)
 
-    def test_nonnegative_int_allows_zero(self) -> None:
-        with patch.dict("os.environ", {"CHECK_AFTER_SYNC_DELAY_SECONDS": "0"}, clear=True):
-            self.assertEqual(_env_nonnegative_int("CHECK_AFTER_SYNC_DELAY_SECONDS", default=10), 0)
-
     def test_env_bool_allows_heartbeat_logging_switches(self) -> None:
         with patch.dict("os.environ", {"HEARTBEAT_LOG_SUCCESS": "true"}, clear=True):
             self.assertTrue(_env_bool("HEARTBEAT_LOG_SUCCESS", default=False))
-
-    def test_positive_int_alias_prefers_new_env_name(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {
-                "HEARTBEAT_FAILURES_BEFORE_SWITCH": "3",
-                "HEARTBEAT_FAILURES_BEFORE_FALLBACK": "2",
-            },
-            clear=True,
-        ):
-            self.assertEqual(
-                _env_positive_int_alias(
-                    "HEARTBEAT_FAILURES_BEFORE_SWITCH",
-                    legacy_name="HEARTBEAT_FAILURES_BEFORE_FALLBACK",
-                    default=2,
-                ),
-                3,
-            )
 
 
 if __name__ == "__main__":

@@ -6,3 +6,5 @@ __pycache__/
 .pytest_cache/
 .unifi-dns4me-state.json
 .DS_Store
+.env.bak
+.env.example

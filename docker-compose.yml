@@ -20,13 +20,9 @@ services:
       # UNIFI_SKIP_TLS_VERIFY: "true"
       # DELETE_STALE: "true"
       # CHECK_AFTER_SYNC: "true"
-      # CHECK_AFTER_SYNC_DELAY_SECONDS: "30"
       # HEARTBEAT_ENABLED: "true"
       # HEARTBEAT_INTERVAL_SECONDS: "300"
-      # HEARTBEAT_FAILURES_BEFORE_SWITCH: "2"
-      # HEARTBEAT_SWITCH_RETRY_SECONDS: "600"
-      # WHITELIST_CHECK_DELAY_SECONDS: "30"
-      # WHITELIST_CHECK_TIMEOUT_SECONDS: "120"
+      # DNS4ME_VALIDATION_TIMEOUT_SECONDS: "600"
       # HEARTBEAT_INTERNET_CHECKS: 1.1.1.1:443,8.8.8.8:443,9.9.9.9:443
       # HEARTBEAT_DNS_CHECK_DOMAINS: cloudflare.com,dns.google,quad9.net
       # HEARTBEAT_HTTP_CHECK_URLS: https://cloudflare.com/cdn-cgi/trace,https://www.google.com/generate_204,https://dns.quad9.net/
