@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from unifi_dns4me.cli import (
     CheckOutcome,
+    HeartbeatRuntime,
     _alternate_server_index,
     _first_success,
     _dns4me_server_for_index,
@@ -17,6 +18,7 @@ from unifi_dns4me.cli import (
     _replace_dns_policy,
     _resolver_validation_loop,
     _resolver_label,
+    _run_heartbeat,
     _set_check_domain_forwarder,
     _switch_resolver,
     _sync,
@@ -335,7 +337,65 @@ class DaemonScheduleTest(unittest.TestCase):
         update_zone.assert_called_once_with(config)
         sleep.assert_any_call(15)
 
-    def test_resolver_validation_loop_rotates_candidate_until_one_passes(self) -> None:
+    def test_healthy_heartbeat_does_not_fetch_rules_or_touch_unifi(self) -> None:
+        config = sync_config("state.json")
+        config.heartbeat_log_success = True
+        config.heartbeat_log_details = True
+        heartbeat = HeartbeatRuntime()
+
+        with patch("unifi_dns4me.cli._wait_for_prerequisites") as prerequisites:
+            with patch("unifi_dns4me.cli._dns4me_health_check", return_value=CheckOutcome(True, "DNS4ME check passed")):
+                with patch("unifi_dns4me.cli._wait_for_dns4me_rules") as rules:
+                    with patch("unifi_dns4me.cli._client_for_config") as client:
+                        with redirect_stdout(StringIO()):
+                            _run_heartbeat(
+                                config,
+                                heartbeat=heartbeat,
+                                dry_run=False,
+                                delete_stale=True,
+                            )
+
+        prerequisites.assert_called_once_with(config, context="Heartbeat")
+        rules.assert_not_called()
+        client.assert_not_called()
+
+    def test_recovery_heartbeat_syncs_after_dns4me_passes(self) -> None:
+        config = sync_config("state.json")
+        config.heartbeat_log_success = True
+        config.heartbeat_log_details = True
+        heartbeat = HeartbeatRuntime(last_dns4me_failed=True)
+        rules = [
+            ForwardRule("example.com", "1.1.1.1"),
+            ForwardRule("example.com", "2.2.2.2"),
+        ]
+
+        with patch("unifi_dns4me.cli._wait_for_prerequisites"):
+            with patch("unifi_dns4me.cli._dns4me_health_check", return_value=CheckOutcome(True, "DNS4ME check passed")):
+                with patch(
+                    "unifi_dns4me.cli._current_resolver_context",
+                    return_value=(rules, 2, "2.2.2.2 (resolver 2 of 2)"),
+                ):
+                    with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
+                        with redirect_stdout(StringIO()):
+                            _run_heartbeat(
+                                config,
+                                heartbeat=heartbeat,
+                                dry_run=False,
+                                delete_stale=True,
+                            )
+
+        self.assertFalse(heartbeat.last_dns4me_failed)
+        sync.assert_called_once_with(
+            config,
+            rules,
+            dry_run=False,
+            delete_stale=True,
+            check_after_sync=False,
+            server_index=2,
+            notifier=None,
+        )
+
+    def test_resolver_validation_loop_writes_alternate_and_returns_to_heartbeat(self) -> None:
         config = sync_config("state.json")
         rules = [
             ForwardRule("example.com", "1.1.1.1"),
@@ -346,27 +406,51 @@ class DaemonScheduleTest(unittest.TestCase):
         )
 
         with patch("unifi_dns4me.cli._client_for_config", return_value=client):
-            with patch("unifi_dns4me.cli._validate_current_dns4me_resolver", side_effect=[False, True]):
+            with patch("unifi_dns4me.cli._validate_current_dns4me_resolver", return_value=False):
                 with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
                     with redirect_stdout(StringIO()):
-                        self.assertTrue(
+                        self.assertEqual(
                             _resolver_validation_loop(
                                 config,
                                 rules=rules,
                                 starting_server_index=1,
                                 dry_run=False,
                                 delete_stale=True,
-                            )
+                            ),
+                            "rotated",
                         )
 
         self.assertEqual(client.updated, [("check-policy", "2.2.2.2")])
+        sync.assert_not_called()
+
+    def test_resolver_validation_loop_syncs_after_candidate_passes(self) -> None:
+        config = sync_config("state.json")
+        rules = [
+            ForwardRule("example.com", "1.1.1.1"),
+            ForwardRule("example.com", "2.2.2.2"),
+        ]
+
+        with patch("unifi_dns4me.cli._validate_current_dns4me_resolver", return_value=True):
+            with patch("unifi_dns4me.cli._sync", return_value=0) as sync:
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(
+                        _resolver_validation_loop(
+                            config,
+                            rules=rules,
+                            starting_server_index=1,
+                            dry_run=False,
+                            delete_stale=True,
+                        ),
+                        "synced",
+                    )
+
         sync.assert_called_once_with(
             config,
             rules,
             dry_run=False,
             delete_stale=True,
             check_after_sync=False,
-            server_index=2,
+            server_index=1,
             notifier=None,
         )
 

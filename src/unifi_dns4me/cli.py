@@ -474,32 +474,43 @@ def _run_heartbeat(
     notifier: Notifier | None = None,
 ) -> None:
     _wait_for_prerequisites(config, context="Heartbeat")
-    rules = _wait_for_dns4me_rules(config, update_zone=False, context="Heartbeat")
-    client = _client_for_config(config)
-    current_server_index = _active_server_index_from_unifi_client(client, rules)
-    dns4me_servers = _dns4me_servers_from_rules(rules)
-    current_resolver = _resolver_label(current_server_index, dns4me_servers)
 
     if config.heartbeat_log_success or heartbeat.last_dns4me_failed:
-        _log(f"Heartbeat started. Current DNS4ME resolver: {current_resolver}.")
+        _log("Heartbeat started.")
 
     dns4me = _dns4me_health_check()
     if config.heartbeat_log_details or heartbeat.last_dns4me_failed or not dns4me.ok:
         _log(f"Heartbeat {dns4me.message}")
 
     if dns4me.ok:
-        if config.heartbeat_log_success or heartbeat.last_dns4me_failed:
-            _log(f"Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: {current_resolver}.")
-        if heartbeat.last_dns4me_failed and notifier:
+        if not heartbeat.last_dns4me_failed:
+            if config.heartbeat_log_success:
+                _log("Heartbeat DNS4ME PASS.")
+            return
+
+        rules, current_server_index, current_resolver = _current_resolver_context(config, context="Heartbeat recovery")
+        _log(f"Heartbeat DNS4ME PASS. Current DNS4ME resolver is healthy: {current_resolver}.")
+        result = _sync(
+            config,
+            rules,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            check_after_sync=False,
+            server_index=current_server_index,
+            notifier=notifier,
+        )
+        if result == 0:
+            heartbeat.last_dns4me_failed = False
+        if notifier:
             notifier.send(
                 "DNS4ME resolver recovered",
                 f"Current DNS4ME resolver: {current_resolver}",
                 level="warning",
                 event="check_recovery",
             )
-        heartbeat.last_dns4me_failed = False
         return
 
+    rules, current_server_index, current_resolver = _current_resolver_context(config, context="Heartbeat")
     heartbeat.last_dns4me_failed = True
     _log(f"Heartbeat DNS4ME validation failed for {current_resolver}. Entering resolver validation loop.", error=True)
     if notifier:
@@ -510,15 +521,18 @@ def _run_heartbeat(
             event="check_fail",
         )
 
-    if _resolver_validation_loop(
+    validation_result = _resolver_validation_loop(
         config,
         rules=rules,
         starting_server_index=current_server_index,
         dry_run=dry_run,
         delete_stale=delete_stale,
         notifier=notifier,
-    ):
+    )
+    if validation_result == "synced":
         heartbeat.last_dns4me_failed = False
+    elif validation_result == "rotated":
+        _log("Resolver validation loop returned to heartbeat after writing alternate dns4me.net resolver.")
     elif notifier:
         notifier.send(
             "DNS4ME resolver validation failed",
@@ -526,6 +540,14 @@ def _run_heartbeat(
             level="error",
             event="switch_failure",
         )
+
+
+def _current_resolver_context(config: Config, *, context: str) -> tuple[list[ForwardRule], int, str]:
+    rules = _wait_for_dns4me_rules(config, update_zone=False, context=context)
+    client = _client_for_config(config)
+    current_server_index = _active_server_index_from_unifi_client(client, rules)
+    current_resolver = _resolver_label(current_server_index, _dns4me_servers_from_rules(rules))
+    return rules, current_server_index, current_resolver
 
 
 def _prerequisite_checks(config: Config) -> HeartbeatOutcome:
@@ -597,62 +619,60 @@ def _resolver_validation_loop(
     dry_run: bool,
     delete_stale: bool,
     notifier: Notifier | None = None,
-) -> bool:
+) -> str:
     dns4me_servers = _dns4me_servers_from_rules(rules)
     if len(dns4me_servers) < 2:
         _log("Resolver validation loop cannot continue because DNS4ME returned fewer than two resolvers.", error=True)
-        return False
+        return "failed"
 
     candidate_index = starting_server_index
-    first_attempt = True
-    while True:
+    candidate_resolver = _resolver_label(candidate_index, dns4me_servers)
+    _log(f"Resolver validation loop validating candidate resolver: {candidate_resolver}.")
+    if _validate_current_dns4me_resolver(config, context="Resolver validation"):
+        _log(f"Resolver validation passed for {candidate_resolver}. Syncing managed domains.")
         try:
-            candidate_server = _dns4me_server_for_index(rules, candidate_index)
-            candidate_resolver = _resolver_label(candidate_index, dns4me_servers)
-            if not first_attempt:
-                _log(f"Resolver validation loop writing candidate resolver to dns4me.net: {candidate_resolver}.")
-                if dry_run:
-                    _log(f"would update check forwarder: dns4me.net -> {candidate_server}")
-                else:
-                    _set_check_domain_forwarder(_client_for_config(config), candidate_server)
-            first_attempt = False
+            result = _sync(
+                config,
+                rules,
+                dry_run=dry_run,
+                delete_stale=delete_stale,
+                check_after_sync=False,
+                server_index=candidate_index,
+                notifier=notifier,
+            )
         except (RuntimeError, UnifiApiError) as exc:
-            _log(f"Resolver validation loop failed while setting candidate resolver: {exc}", error=True)
-            return False
-
-        _log(f"Resolver validation loop validating candidate resolver: {candidate_resolver}.")
-        if _validate_current_dns4me_resolver(config, context="Resolver validation"):
-            _log(f"Resolver validation passed for {candidate_resolver}. Syncing managed domains.")
-            try:
-                result = _sync(
-                    config,
-                    rules,
-                    dry_run=dry_run,
-                    delete_stale=delete_stale,
-                    check_after_sync=False,
-                    server_index=candidate_index,
-                    notifier=notifier,
+            _log(f"Resolver validation sync failed: {exc}", error=True)
+            return "failed"
+        if result == 0:
+            _log(f"Resolver validation loop complete. Current DNS4ME resolver: {candidate_resolver}.")
+            if notifier:
+                notifier.send(
+                    "DNS4ME resolver validation complete",
+                    f"Current DNS4ME resolver: {candidate_resolver}",
+                    level="warning",
+                    event="switch",
                 )
-            except (RuntimeError, UnifiApiError) as exc:
-                _log(f"Resolver validation sync failed: {exc}", error=True)
-                return False
-            if result == 0:
-                _log(f"Resolver validation loop complete. Current DNS4ME resolver: {candidate_resolver}.")
-                if notifier:
-                    notifier.send(
-                        "DNS4ME resolver validation complete",
-                        f"Current DNS4ME resolver: {candidate_resolver}",
-                        level="warning",
-                        event="switch",
-                    )
-                return True
-            _log("Resolver validation sync finished with errors.", error=True)
-            return False
+            return "synced"
+        _log("Resolver validation sync finished with errors.", error=True)
+        return "failed"
 
-        candidate_index = _alternate_server_index(current_server_index=candidate_index)
-        if candidate_index > len(dns4me_servers):
-            _log("Resolver validation loop could not infer another DNS4ME resolver.", error=True)
-            return False
+    alternate_index = _alternate_server_index(current_server_index=candidate_index)
+    if alternate_index > len(dns4me_servers):
+        _log("Resolver validation loop could not infer another DNS4ME resolver.", error=True)
+        return "failed"
+
+    alternate_server = _dns4me_server_for_index(rules, alternate_index)
+    alternate_resolver = _resolver_label(alternate_index, dns4me_servers)
+    _log(f"Resolver validation loop writing alternate resolver to dns4me.net: {alternate_resolver}.")
+    try:
+        if dry_run:
+            _log(f"would update check forwarder: dns4me.net -> {alternate_server}")
+        else:
+            _set_check_domain_forwarder(_client_for_config(config), alternate_server)
+    except (RuntimeError, UnifiApiError) as exc:
+        _log(f"Resolver validation loop failed while setting alternate resolver: {exc}", error=True)
+        return "failed"
+    return "rotated"
 
 
 def _first_success(outcomes: Iterable[CheckOutcome], *, success_prefix: str, failure_prefix: str) -> CheckOutcome:

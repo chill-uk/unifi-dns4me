@@ -216,7 +216,7 @@ With both enabled, healthy heartbeat logs look like:
 ```
 
 If the internet, normal DNS, or normal HTTP checks fail, the daemon logs those failures, waits 30 seconds, and retries prerequisites.
-When DNS4ME validation fails, heartbeat refreshes your DNS4ME whitelist and validates the current `dns4me.net` resolver candidate for up to `DNS4ME_VALIDATION_TIMEOUT_SECONDS`. If that candidate still fails, it writes the alternate resolver to `dns4me.net` and repeats the validation loop. It only switches all managed forwarders after the current candidate passes.
+When DNS4ME validation fails, heartbeat refreshes your DNS4ME whitelist and validates the current `dns4me.net` resolver candidate for up to `DNS4ME_VALIDATION_TIMEOUT_SECONDS`. If that candidate still fails, it writes the alternate resolver to `dns4me.net` and returns to the heartbeat loop. It only switches all managed forwarders after the current candidate passes.
 
 ```text
 2026-04-20T10:19:19 Heartbeat DNS4ME validation failed for 5.6.7.8 (resolver 1 of 2). Entering resolver validation loop.
@@ -357,7 +357,7 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - `switch-resolver --server-index N` manually forces `dns4me.net` and all managed forwarders to a specific DNS4ME resolver. It skips validation because manual override is an operator decision.
 - Daemon startup blocks until UniFi, prerequisite TCP/DNS/HTTP checks, and DNS4ME rule fetching are available. Startup does not perform failover.
 - The daemon calls DNS4ME's update-zone endpoint on startup. One-shot sync, manual resolver switch, and each daemon sync call it again before fetching the dnsmasq feed.
-- If heartbeat sees a DNS4ME failure while prerequisite checks are healthy, it enters resolver validation. It refreshes the DNS4ME whitelist, polls the current `dns4me.net` candidate for up to `DNS4ME_VALIDATION_TIMEOUT_SECONDS`, and if it still fails, writes the alternate resolver to `dns4me.net` and repeats. It only syncs all managed domains after the current candidate passes validation.
+- If heartbeat sees a DNS4ME failure while prerequisite checks are healthy, it enters resolver validation. It refreshes the DNS4ME whitelist, polls the current `dns4me.net` candidate for up to `DNS4ME_VALIDATION_TIMEOUT_SECONDS`, and if it still fails, writes the alternate resolver to `dns4me.net` and returns to the heartbeat loop. It only syncs all managed domains after the current candidate passes validation.
 - For each domain, it queries UniFi with `filter=domain.eq('example.com')`.
 - If no Forward Domain policy exists, it creates one.
 - If one Forward Domain policy exists and already points to the current DNS4ME resolver, it leaves it alone.

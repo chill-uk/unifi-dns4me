@@ -106,7 +106,7 @@ if pass:
 
 if fail:
     set dns4me.net → alternate resolver
-    repeat loop
+    return to heartbeat loop
 ```
 
 This creates a continuous validation loop between the available DNS4ME resolvers.
@@ -125,8 +125,7 @@ if resolver 2 passes:
 
 if resolver 2 fails:
     write resolver 1 to dns4me.net
-    validate resolver 1
-    repeat
+    return to heartbeat loop
 ```
 
 ---
@@ -201,7 +200,7 @@ flowchart TD
     P --> K
 
     M -->|Fail| O[Switch dns4me.net to Alternate]
-    O --> L
+    O --> H
 
     %% MANUAL
     X[Manual Override] --> Y[Set dns4me.net]
