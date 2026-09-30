@@ -357,6 +357,8 @@ The state file is JSON. Docker uses `/data/state.json` by default when using the
 - `switch-resolver --server-index N` manually forces `dns4me.net` and all managed forwarders to a specific DNS4ME resolver. It skips validation because manual override is an operator decision.
 - Daemon startup blocks until UniFi, prerequisite TCP/DNS/HTTP checks, and DNS4ME rule fetching are available. Startup does not perform failover.
 - The daemon calls DNS4ME's update-zone endpoint on startup. One-shot sync, manual resolver switch, and each daemon sync call it again before fetching the dnsmasq feed.
+- Dry-run commands skip whitelist updates and UniFi writes, including during daemon startup, scheduled sync, and heartbeat validation.
+- If both filtered and unfiltered UniFi policy reads fail, sync stops rather than treating the policies as missing. Operational heartbeat errors are logged and notified, then retried on the next cycle.
 - If heartbeat sees a DNS4ME failure while prerequisite checks are healthy, it enters resolver validation. It refreshes the DNS4ME whitelist, polls the current `dns4me.net` candidate for up to `DNS4ME_VALIDATION_TIMEOUT_SECONDS`, and if it still fails, writes the alternate resolver to `dns4me.net` and returns to the heartbeat loop. It only syncs all managed domains after the current candidate passes validation.
 - For each domain, it queries UniFi with `filter=domain.eq('example.com')`.
 - If no Forward Domain policy exists, it creates one.

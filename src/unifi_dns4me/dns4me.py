@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import Any, Iterable
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -30,7 +30,8 @@ def fetch_dnsmasq_config(url: str, timeout: float = 30.0) -> str:
             charset = response.headers.get_content_charset() or "utf-8"
             return response.read().decode(charset)
     except URLError as exc:
-        raise RuntimeError(f"Could not fetch DNS4ME dnsmasq feed from {url}: {exc.reason}") from exc
+        detail = f"HTTP {exc.code}" if isinstance(exc, HTTPError) else "network request failed"
+        raise RuntimeError(f"Could not fetch DNS4ME dnsmasq feed: {detail}") from None
 
 
 def update_dns4me_zone(url: str, timeout: float = 30.0) -> str:
@@ -40,7 +41,8 @@ def update_dns4me_zone(url: str, timeout: float = 30.0) -> str:
             charset = response.headers.get_content_charset() or "utf-8"
             return response.read().decode(charset)
     except URLError as exc:
-        raise RuntimeError(f"Could not update DNS4ME whitelisted IP via {url}: {exc.reason}") from exc
+        detail = f"HTTP {exc.code}" if isinstance(exc, HTTPError) else "network request failed"
+        raise RuntimeError(f"Could not update DNS4ME whitelisted IP: {detail}") from None
 
 
 def fetch_dns4me_check(timeout: float = 30.0) -> dict[str, Any]:
