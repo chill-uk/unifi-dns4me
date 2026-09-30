@@ -213,7 +213,10 @@ def main(argv: list[str] | None = None) -> int:
                 check_after_sync=args.check_after_sync,
             )
 
-        rules = _fetch_dns4me_rules(config, update_zone=args.command in {"sync", "switch-resolver"})
+        rules = _fetch_dns4me_rules(
+            config,
+            update_zone=args.command in {"sync", "switch-resolver"} and not args.dry_run,
+        )
         if not rules:
             print("No DNS4ME forward rules were found. Check your DNS4ME API key or source URL.", file=sys.stderr)
             return 2
@@ -317,7 +320,7 @@ def _run_scheduled_sync(
 ) -> None:
     _log("Starting scheduled sync.")
     try:
-        rules = _fetch_dns4me_rules(config, update_zone=True)
+        rules = _fetch_dns4me_rules(config, update_zone=not dry_run)
         if not rules:
             _log("No DNS4ME forward rules were found. Skipping this run.", error=True)
             return
@@ -362,7 +365,7 @@ def _run_startup_sync(
     _log("Starting startup checks.")
     _wait_for_unifi(config)
     _wait_for_prerequisites(config, context="Startup")
-    rules = _wait_for_dns4me_rules(config, update_zone=True, context="Startup")
+    rules = _wait_for_dns4me_rules(config, update_zone=not dry_run, context="Startup")
     _log("Startup checks passed. Syncing managed domains to active resolver.")
     result = _sync(
         config,
@@ -466,6 +469,33 @@ def _wait_until_next_sync(
 
 
 def _run_heartbeat(
+    config: Config,
+    *,
+    heartbeat: HeartbeatRuntime,
+    dry_run: bool,
+    delete_stale: bool,
+    notifier: Notifier | None = None,
+) -> None:
+    try:
+        _run_heartbeat_once(
+            config,
+            heartbeat=heartbeat,
+            dry_run=dry_run,
+            delete_stale=delete_stale,
+            notifier=notifier,
+        )
+    except RuntimeError as exc:
+        _log(f"Heartbeat failed; will retry on the next cycle: {exc}", error=True)
+        if notifier:
+            notifier.send(
+                "unifi-dns4me heartbeat failed",
+                str(exc),
+                level="error",
+                event="switch_failure",
+            )
+
+
+def _run_heartbeat_once(
     config: Config,
     *,
     heartbeat: HeartbeatRuntime,
@@ -578,9 +608,10 @@ def _prerequisite_checks(config: Config) -> HeartbeatOutcome:
     return HeartbeatOutcome(prerequisites_ok=prerequisites_ok, dns4me_ok=False, details=tuple(details))
 
 
-def _validate_current_dns4me_resolver(config: Config, *, context: str) -> bool:
-    _log(f"{context} refreshing DNS4ME whitelisted public IP before validation.")
-    _safe_update_dns4me_zone(config)
+def _validate_current_dns4me_resolver(config: Config, *, context: str, dry_run: bool = False) -> bool:
+    if not dry_run:
+        _log(f"{context} refreshing DNS4ME whitelisted public IP before validation.")
+        _safe_update_dns4me_zone(config)
 
     delay_seconds = DNS4ME_VALIDATION_POLL_SECONDS
     timeout_seconds = config.dns4me_validation_timeout_seconds
@@ -628,7 +659,7 @@ def _resolver_validation_loop(
     candidate_index = starting_server_index
     candidate_resolver = _resolver_label(candidate_index, dns4me_servers)
     _log(f"Resolver validation loop validating candidate resolver: {candidate_resolver}.")
-    if _validate_current_dns4me_resolver(config, context="Resolver validation"):
+    if _validate_current_dns4me_resolver(config, context="Resolver validation", dry_run=dry_run):
         _log(f"Resolver validation passed for {candidate_resolver}. Syncing managed domains.")
         try:
             result = _sync(
@@ -1226,7 +1257,7 @@ def _find_dns_policies_for_domain(client: UnifiClient, domain: str) -> list[DnsP
             candidates = client.list_dns_policies()
         except UnifiApiError as fallback_exc:
             _log(f"could not list DNS policies for {domain}: {fallback_exc}", error=True)
-            return []
+            raise
 
     return [
         policy

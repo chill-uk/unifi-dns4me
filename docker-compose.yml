@@ -12,9 +12,9 @@ services:
       # UNIFI_API_KEY: ${UNIFI_API_KEY}
       TZ: Europe/Amsterdam
       SYNC_AT: "03:15"
+      STATE_PATH: /data/state.json
       
       # Optional
-      # STATE_PATH: /data/state.json
       # UNIFI_HOST: https://192.168.1.1
       # UNIFI_SITE_ID: Default
       # UNIFI_SKIP_TLS_VERIFY: "true"
